@@ -1,0 +1,6 @@
+{application, meta,
+ [{description, "Meta-Erlang - template-based meta-extension for Erlang"},
+  {vsn, "0.0.1"},
+  {modules, []},
+  {registered, []},
+  {applications, []}]}.
