@@ -239,9 +239,9 @@ eval_splice(Ln, Splice, Info) ->
         error:{badarg, Arg} ->
             meta_error(Ln, splice_badarg, Arg);
         error:undef ->
-            meta_error(Ln, splice_unknown_external_function)
-        %% error:_ ->
-        %%     meta_error(Ln, invalid_splice)
+            meta_error(Ln, splice_unknown_external_function);
+        error:_ ->
+            meta_error(Ln, invalid_splice)
     end.
 
 local_handler(Ln, Info) ->

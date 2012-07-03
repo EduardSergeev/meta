@@ -45,6 +45,11 @@ splice_test_() ->
           meta:splice(lists:nth(4, q1())),
           meta:splice(lists:nth(5, q1())),
           meta:splice(lists:last(q1()))])},
+     {"Inline splice",
+      [?_assertEqual(42,
+                     meta:splice(meta:quote(42))),
+       ?_assertEqual(42,
+                     (meta:splice(meta:quote(fun(A) -> A end)))(42))]},
      {"Function type slices",
       ?_test(
          begin
@@ -63,7 +68,43 @@ quote_splice_test_() ->
              A = meta:quote(1), Q1 = meta:quote(meta:splice(A) + 2), Q2 = meta:quote(1 + 2),
              ?assertEqual(Q2, Q1)
          end)}].
-    
+
+%%
+%% Local function call
+%%
+local() ->
+    meta:quote(42.2).
+
+trans() ->
+    local().
+
+id(A) ->
+    A.
+
+local(A) ->
+    meta:quote(meta:splice(A) + 1).
+
+local(Fun, A) ->
+    meta:quote((meta:splice(Fun))(meta:splice(A))).
+
+
+local_call_test_() ->
+    [?_assertEqual(42.2,
+                   meta:splice(local())),
+     ?_assertEqual(42.2,
+                   meta:splice(trans())),
+     ?_assertEqual(42.2,
+                   meta:splice(id(id(trans())))),
+     ?_assertEqual(3,
+                   meta:splice(local(meta:quote(2)))),
+     ?_test(
+        begin
+            R = meta:splice(
+                  local(
+                    meta:quote(fun(A) -> A + 3 end),
+                    meta:quote(2))),
+            ?assertEqual(5, R)
+        end)].
 
 %%
 %% Utilities
