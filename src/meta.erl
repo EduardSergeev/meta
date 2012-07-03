@@ -6,7 +6,7 @@
 -export([parse_transform/2,
          format_error/1]).
 
--include("meta_syntax.hrl").
+-include("../include/meta_syntax.hrl").
 
 -record(info,
         {meta = [],
