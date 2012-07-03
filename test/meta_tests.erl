@@ -132,6 +132,32 @@ remote_call_test_() ->
                        meta:quote(1.5))))].
 
 %%
+%% quote manipulation test
+%%
+meta_call(F, A) ->
+    meta:quote((meta:splice(F))(meta:splice(A))).
+
+unwind(N, QFun, QArg) ->
+    F = fun(E, A) ->
+                meta_call(E, A)
+        end,
+    lists:foldr(F, QArg, lists:duplicate(N, QFun)).
+
+p1(A) ->
+    A + 1.
+
+unwind_fun_test() ->
+    QFunName = meta:quote(p1),
+    QArg = meta:quote(42),
+    N = 3,
+    QUnwinded = unwind(N, QFunName, QArg),
+    ?assertEqual("p1(p1(p1(42)))",
+                 erl_prettypr:format(QUnwinded)),
+    ?assertEqual(6,
+                 meta:splice(unwind(5, meta:quote(p1), meta:quote(1)))).
+    
+
+%%
 %% Utilities
 %%
 is_valid_quote(QExpr) ->
