@@ -14,6 +14,9 @@
 
 -compile(export_all).
 
+-import(remote, [meta_inc/0, meta_add/2]).
+-meta([meta_add/2]).
+
 %%
 %% meta:quote tests
 %%
@@ -70,7 +73,7 @@ quote_splice_test_() ->
          end)}].
 
 %%
-%% Local function call
+%% Local function call in 'meta:splice'
 %%
 local() ->
     meta:quote(42.2).
@@ -105,6 +108,28 @@ local_call_test_() ->
                     meta:quote(2))),
             ?assertEqual(5, R)
         end)].
+
+%%
+%% Remote function call in 'meta:splice'
+%%
+remote_call_test_() ->
+    [?_assertEqual(42,
+                   meta:splice(remote:meta_integer())),
+     {"Automatic splice with '-meta' attribute",
+      ?_assertEqual(42,
+                    meta_add(meta:quote(21), meta:quote(21)))},
+     {"Call via '-import' attribute",
+      ?_test(
+         begin
+             Inc = meta:splice(meta_inc()),
+             ?assert(is_function(Inc)),
+             ?assertEqual(3, Inc(2))
+         end)},
+     ?_assertEqual(12.5,
+                   meta:splice(
+                     remote:trans(
+                       meta:quote(11),
+                       meta:quote(1.5))))].
 
 %%
 %% Utilities
