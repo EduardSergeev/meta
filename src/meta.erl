@@ -1,7 +1,7 @@
 -module(meta).
 
 -export([reify_type/2,
-         meta_error/1]).
+         error/2, error/3]).
 
 -export([parse_transform/2,
          format_error/1]).
@@ -42,6 +42,13 @@
 %%%
 reify_type(Name, #info{types = Ts}) ->
     fetch(Name, Ts, reify_unknown_record_type).
+
+
+error(Module, Error) ->
+    throw({external_error, Module, Error}).
+
+error(Module, Error, Arg) ->
+    throw({external_error, Module, {Error, Arg}}).
 
     
 
@@ -228,8 +235,8 @@ eval_splice(Ln, Splice, Info) ->
         erl_lint:exprs([Expr], []),
         {Expr, Info}
     catch
-        error:{get_line, Error} ->
-            meta_error(Ln, Error);
+        throw:{external_error, Module, Error} ->
+            external_error(Ln, Module, Error);
         error:{unbound, Var} ->
             meta_error(Ln, splice_external_var, Var);
         error:{badarity, _} ->
@@ -291,14 +298,14 @@ safe_mapfoldl(Fun, Info, Fns) ->
                  catch
                      throw:{Line, Reason} ->
                          E = {error, {Line, ?MODULE, Reason}},
+                         {E, I#info{funs = dict:store(Fn, E, Fs)}};
+                     throw:{Line, Module, Reason} ->
+                         E = {error, {Line, Module, Reason}},
                          {E, I#info{funs = dict:store(Fn, E, Fs)}}
                  end
          end,    
     lists:mapfoldl(Do, Info, Fns).
 
-
-meta_error(Error) ->
-    throw({get_line, Error}).
 
 meta_error(Line, Error) ->
     throw({Line, Error}).
@@ -306,6 +313,8 @@ meta_error(Line, Error) ->
 meta_error(Line, Error, Arg) ->
     throw({Line, {Error, Arg}}).
 
+external_error(Line, Module, Error) ->
+    throw({Line, Module, Error}).
 
 
 
