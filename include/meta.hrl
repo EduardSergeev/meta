@@ -1,5 +1,5 @@
 
 -compile({parse_transform, meta}).
 
-%% -include("meta_syntax.hrl").
-
+-define(q(Quote), (meta:quote(Quote))).
+-define(s(Splice), (meta:splice(Splice))).
