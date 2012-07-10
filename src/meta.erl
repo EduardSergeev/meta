@@ -1,6 +1,7 @@
 -module(meta).
 
 -export([reify_type/2,
+         reify_attributes/2,
          error/2, error/3]).
 
 -export([parse_transform/2,
@@ -10,6 +11,7 @@
 
 -record(info,
         {meta = [],
+         attributes = dict:new(),
          imports = dict:new(),
          types = dict:new(),
          records = dict:new(),
@@ -43,6 +45,8 @@
 reify_type(Name, #info{types = Ts}) ->
     fetch(Name, Ts, reify_unknown_record_type).
 
+reify_attributes(Name, #info{attributes = As}) ->
+    lookup(Name, As, []).
 
 error(Module, Error) ->
     throw({external_error, Module, Error}).
@@ -186,6 +190,14 @@ fetch(Line, Name, Dict, Error, Info) ->
             meta_error(Line, {Error, Name})
     end.
 
+lookup(Name, Dict, Default) ->
+    case dict:find(Name, Dict) of
+        {ok, Def} ->
+            Def;
+        error ->
+            Default
+    end.
+
 %%
 %% Various info gathering for subsequent use
 %%
@@ -214,6 +226,11 @@ info(#attribute{name = spec, arg = Def} = Form,
     Name = element(1, Def),
     Ts1 = dict:store(Name, Def, Ts),
     Info1 = Info#info{types = Ts1},
+    {Form, Info1};
+info(#attribute{name = Name, arg = Arg} = Form,
+     #info{attributes = As} = Info) ->
+    As1 = dict:append(Name, Arg, As),
+    Info1 = Info#info{attributes = As1},
     {Form, Info1};
 info(#function{name = Name, arity = Arity} = Form,
      #info{funs = Fs} = Info) ->
@@ -244,11 +261,11 @@ eval_splice(Ln, Splice, Info) ->
         error:{badfun, _} ->
             meta_error(Ln, splice_badfun);
         error:{badarg, Arg} ->
-            meta_error(Ln, splice_badarg, Arg);
-        error:undef ->
-            meta_error(Ln, splice_unknown_external_function);
-        error:_ ->
-            meta_error(Ln, invalid_splice)
+            meta_error(Ln, splice_badarg, Arg)
+        %% error:undef ->
+        %%     meta_error(Ln, splice_unknown_external_function);
+        %% error:_ ->
+        %%     meta_error(Ln, invalid_splice)
     end.
 
 local_handler(Ln, Info) ->
@@ -335,6 +352,8 @@ format_error({reify_unknown_record_type, Name}) ->
     format("attempt to reify unknown record type '~s'", [Name]);
 format_error({reify_unknown_function_spec, {Name, Arity}}) ->
     format("attempt to reify unknown function -spec '~s/~b'", [Name, Arity]);
+format_error({reify_unknown_attribute, Name}) ->
+    format("attempt to reify unknown attribute '~s'", [Name]);
 format_error(invalid_splice) ->
     "invalid expression in meta:splice/1";
 format_error({splice_external_var, Var}) ->
