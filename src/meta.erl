@@ -2,6 +2,7 @@
 
 -export([reify_type/2,
          reify_attributes/2,
+         reify/2,
          error/2, error/3]).
 
 -export([parse_transform/2,
@@ -42,11 +43,37 @@
 %%%
 %%% API
 %%%
-reify_type(Name, #info{types = Ts}) ->
-    fetch(Name, Ts, reify_unknown_record_type).
-
+reify_type({record,_Name} = Record, #info{types = Ts} = Info) ->
+    Key = {Record,0},
+    case lookup(Key, Ts, none) of
+        none ->
+            {_,Fields} = reify(Record, Info),
+            {Record,Fields,[]};
+        Def ->
+            Def
+    end;    
+reify_type({'fun',Name,Arity} = Fun, #info{types = Ts}) ->
+    fetch(Fun, Ts, {reify_unknown_function_spec, {Name, Arity}});
+reify_type({Name,Args}, #info{types = Ts}) ->
+    Key = {Name,length(Args)},
+    case lookup(Key, Ts, none) of
+        none ->
+            case is_standard(Key) of
+                true ->
+                    Key;
+                false ->
+                    meta_error(get_line, {reify_unknown_type, {Name,Args}})
+            end;
+        Def ->
+            Def
+    end.
+            
 reify_attributes(Name, #info{attributes = As}) ->
     lookup(Name, As, []).
+
+
+reify({record,Name}, #info{records = Rs}) ->
+    fetch(Name, Rs, {reify_unknown_record, Name}).
 
 error(Module, Error) ->
     throw({external_error, Module, Error}).
@@ -129,18 +156,31 @@ meta(?REIFY(Ln, {'fun', _, {function, Name, Arity}}),
     end;
 meta(?REIFY(Ln, {record, _, Name, []}),
       #info{records = Rs} = Info) ->
-    fetch(Ln, Name, Rs, reify_unknown_record, Info);             
-meta(?REIFYTYPE(Ln, #call{function = #atom{name = Name}, args = _Args}),
+    fetch(Ln, Name, Rs, {reify_unknown_record, Name}, Info);             
+meta(?REIFYTYPE(Ln, #call{function = #atom{name = Name}, args = Args}),
       #info{types = Ts} = Info) ->
-    fetch(Ln, Name, Ts, reify_unknown_type, Info);             
+    Key = {Name, length(Args)},
+    fetch(Ln, Key, Ts, {reify_unknown_type, {Name, Args}}, Info);             
 meta(?REIFYTYPE(Ln, {record, _, Name, []}),
-      #info{types = Ts} = Info) ->
-    Key = {record, Name},
-    fetch(Ln, Key, Ts, reify_unknown_record_type, Info);
+      #info{types = Ts, records = Rs} = Info) ->
+    Key = {Rec = {record, Name}, 0},
+    case lookup(Key, Ts, none, Info) of
+        none ->
+            case dict:find(Name, Rs) of
+                {ok, {_,Fields}} ->
+                    Def = {Rec,Fields,[]},
+                    {Ast, Info1} = term_to_ast(Def, Info),
+                    {erl_syntax:revert(Ast), Info1};
+                error ->
+                    meta_error(Ln, {reify_unknown_record, Name})
+            end;
+        Result ->
+            Result
+    end;    
 meta(?REIFYTYPE(Ln, {'fun', _, {function, Name, Arity}}),
       #info{types = Ts} = Info) ->
-    Key = {Name, Arity},
-    fetch(Ln, Key, Ts, reify_unknown_function_spec, Info);
+    Key = {'fun', Name, Arity},
+    fetch(Ln, Key, Ts, {reify_unknown_function_spec, Key}, Info);
 meta(?REIFY_ALL_TYPES(_Ln), Info) ->
     {erl_parse:abstract(Info#info.types), Info};
 meta(?REIFY_ALL(_Ln), Info) ->
@@ -149,8 +189,6 @@ meta(?REIFY_ALL(_Ln), Info) ->
 
 meta(Form, Info) ->
     traverse(fun meta/2, Info, Form).
-
-
 
 
 term_to_ast(?QUOTE(Ln, _), _) ->
@@ -178,16 +216,7 @@ fetch(Name, Dict, Error) ->
         {ok, Def} ->
             Def;
         error ->
-            meta_error(get_line, {Error, Name})
-    end.
-
-fetch(Line, Name, Dict, Error, Info) ->
-    case dict:find(Name, Dict) of
-        {ok, Def} ->
-            {Ast, Info1} = term_to_ast(Def, Info),
-            {erl_syntax:revert(Ast), Info1};
-        error ->
-            meta_error(Line, {Error, Name})
+            meta_error(get_line, Error)
     end.
 
 lookup(Name, Dict, Default) ->
@@ -197,6 +226,26 @@ lookup(Name, Dict, Default) ->
         error ->
             Default
     end.
+
+
+fetch(Line, Name, Dict, Error, Info) ->
+    case dict:find(Name, Dict) of
+        {ok, Def} ->
+            {Ast, Info1} = term_to_ast(Def, Info),
+            {erl_syntax:revert(Ast), Info1};
+        error ->
+            meta_error(Line, Error)
+    end.
+
+lookup(Name, Dict, Default, Info) ->
+    case dict:find(Name, Dict) of
+        {ok, Def} ->
+            {Ast, Info1} = term_to_ast(Def, Info),
+            {erl_syntax:revert(Ast), Info1};
+        error ->
+            Default
+    end.
+
 
 %%
 %% Various info gathering for subsequent use
@@ -217,14 +266,16 @@ info(#attribute{name = record, arg = {Name, _} = Def} = Form,
     {Form, Info1};
 info(#attribute{name = type, arg = Def} = Form,
      #info{types = Ts} = Info) ->
-    Name = element(1, Def),
-    Ts1 = dict:store(Name, Def, Ts),
+    {Type, _, Args} = Def,
+    Key = {Type, length(Args)},
+    Ts1 = dict:store(Key, Def, Ts),
     Info1 = Info#info{types = Ts1},
     {Form, Info1};
 info(#attribute{name = spec, arg = Def} = Form,
      #info{types = Ts} = Info) ->
-    Name = element(1, Def),
-    Ts1 = dict:store(Name, Def, Ts),
+    {Name, Arity} = element(1, Def),
+    Key = {'fun', Name, Arity},
+    Ts1 = dict:store(Key, Def, Ts),
     Info1 = Info#info{types = Ts1},
     {Form, Info1};
 info(#attribute{name = Name, arg = Arg} = Form,
@@ -261,11 +312,11 @@ eval_splice(Ln, Splice, Info) ->
         error:{badfun, _} ->
             meta_error(Ln, splice_badfun);
         error:{badarg, Arg} ->
-            meta_error(Ln, splice_badarg, Arg)
-        %% error:undef ->
-        %%     meta_error(Ln, splice_unknown_external_function);
-        %% error:_ ->
-        %%     meta_error(Ln, invalid_splice)
+            meta_error(Ln, splice_badarg, Arg);
+        error:undef ->
+            meta_error(Ln, splice_unknown_external_function);
+        error:_ ->
+            meta_error(Ln, invalid_splice)
     end.
 
 local_handler(Ln, Info) ->
@@ -295,6 +346,15 @@ local_handler(Ln, Info) ->
             end
     end.  
 
+%%
+%% Type reification functions
+%%
+is_standard({Type,0}) ->
+    Ts = [integer, float, binary, boolean, atom, tuple,
+          byte, char, number, string, any],
+    lists:member(Type, Ts);
+is_standard(_) ->
+    false.
 
 %%
 %% Recursive traversal a-la mapfoldl
@@ -323,7 +383,9 @@ safe_mapfoldl(Fun, Info, Fns) ->
          end,    
     lists:mapfoldl(Do, Info, Fns).
 
-
+%%
+%% Compile-time errorr
+%%
 meta_error(Line, Error) ->
     throw({Line, Error}).
 
@@ -345,11 +407,12 @@ format_error(nested_splice) ->
 format_error({reify_unknown_function, {Name, Arity}}) ->
     format("attempt to reify unknown function '~s/~b'", [Name, Arity]);
 format_error({reify_unknown_record, Name}) ->
-    format("attempt to reify unknown record '~s'", [Name]);
-format_error({reify_unknown_type, Name}) ->
-    format("attempt to reify unknown type '~s'", [Name]);
+    format("attempt to reify unknown record '#~s{}'", [Name]);
+format_error({reify_unknown_type, {Name,Args}}) ->
+    Args1 = string:join([format("~p", A) || A <- Args], ","),
+    format("attempt to reify unknown type '~s(~s)'", [Name, Args1]);
 format_error({reify_unknown_record_type, Name}) ->
-    format("attempt to reify unknown record type '~s'", [Name]);
+    format("attempt to reify unknown record type '#~s{}'", [Name]);
 format_error({reify_unknown_function_spec, {Name, Arity}}) ->
     format("attempt to reify unknown function -spec '~s/~b'", [Name, Arity]);
 format_error({reify_unknown_attribute, Name}) ->
