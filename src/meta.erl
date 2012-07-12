@@ -135,7 +135,8 @@ meta(?LOCAL_CALL(Ln, Name, Args) = Form, #info{meta = Ms} = Info) ->
             traverse(fun meta/2, Info, Form)
     end;
 meta(?QUOTE(_, Quote), Info) ->
-    {Ast, Info1} = term_to_ast(Quote, Info),
+    Quote1 = set_pos(Quote, 0),
+    {Ast, Info1} = term_to_ast(Quote1, Info),
     {erl_syntax:revert(Ast), Info1};
 meta(#attribute{} = Form, Info) ->
     {Form, Info};
@@ -300,8 +301,9 @@ eval_splice(Ln, Splice, Info) ->
     try
         {value, Val, _} = erl_eval:exprs(Splice, Bs, Local),
         Expr = erl_syntax:revert(Val),
-        erl_lint:exprs([Expr], []),
-        {Expr, Info}
+        Expr1 = set_pos(Expr, Ln),
+        erl_lint:exprs([Expr1], []),
+        {Expr1, Info}
     catch
         throw:{external_error, Module, Error} ->
             external_error(Ln, Module, Error);
@@ -311,12 +313,12 @@ eval_splice(Ln, Splice, Info) ->
             meta_error(Ln, splice_badarity);
         error:{badfun, _} ->
             meta_error(Ln, splice_badfun);
-        error:{badarg, Arg} ->
-            meta_error(Ln, splice_badarg, Arg);
+        %% error:{badarg, Arg} ->
+        %%     meta_error(Ln, splice_badarg, Arg);
         error:undef ->
-            meta_error(Ln, splice_unknown_external_function);
-        error:_ ->
-            meta_error(Ln, invalid_splice)
+            meta_error(Ln, splice_unknown_external_function)
+        %% error:_ ->
+        %%     meta_error(Ln, invalid_splice)
     end.
 
 local_handler(Ln, Info) ->
@@ -355,6 +357,24 @@ is_standard({Type,0}) ->
     lists:member(Type, Ts);
 is_standard(_) ->
     false.
+
+
+%%
+%% Recursively set position (Line number) to Pos
+%%
+set_pos(Form, Pos) when is_tuple(Form) andalso 
+                        is_integer(element(2, Form))->
+    [Tag,_Pos|Fs] = tuple_to_list(Form),
+    Fs1 = [set_pos(F, Pos) || F <- Fs],
+    list_to_tuple([Tag,Pos|Fs1]);
+set_pos(Form, Pos) when is_tuple(Form) ->
+    [Tag|Fs] = tuple_to_list(Form),
+    Fs1 = [set_pos(F, Pos) || F <- Fs],
+    list_to_tuple([Tag|Fs1]);
+set_pos(Fs, Pos) when is_list(Fs) ->
+    [set_pos(F, Pos) || F <- Fs];
+set_pos(Smt, _Pos) ->
+    Smt.
 
 %%
 %% Recursive traversal a-la mapfoldl

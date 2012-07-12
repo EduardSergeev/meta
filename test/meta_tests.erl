@@ -68,7 +68,9 @@ quote_splice_test_() ->
     [{"Simple type quote with splice argiment",
       ?_test(
          begin
-             A = meta:quote(1), Q1 = meta:quote(meta:splice(A) + 2), Q2 = meta:quote(1 + 2),
+             A = meta:quote(1),
+             Q1 = meta:quote(meta:splice(A) + 2),
+             Q2 = meta:quote(1 + 2),
              ?assertEqual(Q2, Q1)
          end)}].
 
