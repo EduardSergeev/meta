@@ -8,6 +8,8 @@
 -export([parse_transform/2,
          format_error/1]).
 
+-export([map/2]).
+
 -include("../include/meta_syntax.hrl").
 
 -record(info,
@@ -67,7 +69,8 @@ reify_type({Name,Args}, #info{types = Ts}) ->
         Def ->
             Def
     end.
-            
+
+
 reify_attributes(Name, #info{attributes = As}) ->
     lookup(Name, As, []).
 
@@ -200,7 +203,6 @@ term_to_ast(Ls, Info) when is_list(Ls) ->
     {Ls1, _} = traverse(fun term_to_ast/2, Info, Ls),
     {erl_syntax:list(Ls1), Info};
 term_to_ast(T, Info) when is_tuple(T) ->
-    %% tuple_to_ast(T, Info);
     Ls = tuple_to_list(T),
     {Ls1, Info1} = traverse(fun term_to_ast/2, Info, Ls),
     {erl_syntax:tuple(Ls1), Info1};
@@ -313,12 +315,12 @@ eval_splice(Ln, Splice, Info) ->
             meta_error(Ln, splice_badarity);
         error:{badfun, _} ->
             meta_error(Ln, splice_badfun);
-        %% error:{badarg, Arg} ->
-        %%     meta_error(Ln, splice_badarg, Arg);
+        error:{badarg, Arg} ->
+            meta_error(Ln, splice_badarg, Arg);
         error:undef ->
-            meta_error(Ln, splice_unknown_external_function)
-        %% error:_ ->
-        %%     meta_error(Ln, invalid_splice)
+            meta_error(Ln, splice_unknown_external_function);
+        error:_ ->
+            meta_error(Ln, invalid_splice)
     end.
 
 local_handler(Ln, Info) ->
@@ -358,23 +360,32 @@ is_standard({Type,0}) ->
 is_standard(_) ->
     false.
 
-
 %%
 %% Recursively set position (Line number) to Pos
 %%
-set_pos(Form, Pos) when is_tuple(Form) andalso 
-                        is_integer(element(2, Form))->
-    [Tag,_Pos|Fs] = tuple_to_list(Form),
-    Fs1 = [set_pos(F, Pos) || F <- Fs],
-    list_to_tuple([Tag,Pos|Fs1]);
-set_pos(Form, Pos) when is_tuple(Form) ->
-    [Tag|Fs] = tuple_to_list(Form),
-    Fs1 = [set_pos(F, Pos) || F <- Fs],
-    list_to_tuple([Tag|Fs1]);
-set_pos(Fs, Pos) when is_list(Fs) ->
-    [set_pos(F, Pos) || F <- Fs];
-set_pos(Smt, _Pos) ->
-    Smt.
+set_pos(Form, Pos) ->
+    Fun = fun(Tuple) when is_tuple(Tuple) andalso 
+                          is_integer(element(2, Tuple)) ->
+                  setelement(2, Tuple, Pos);
+             (Smt) ->
+                  Smt
+          end,
+    map(Fun, Form).
+
+
+%%
+%% Depth-first map
+%%
+map(Fun, Form) when is_tuple(Form) ->
+    Fs = tuple_to_list(Form),
+    Fs1 = map(Fun, Fs),
+    Form1 = list_to_tuple(Fs1),
+    Fun(Form1);
+map(Fun, Fs) when is_list(Fs) ->
+    [map(Fun, F) || F <- Fs];
+map(Fun, Smt) ->
+    Fun(Smt).
+    
 
 %%
 %% Recursive traversal a-la mapfoldl
