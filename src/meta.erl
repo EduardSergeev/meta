@@ -8,8 +8,6 @@
 -export([parse_transform/2,
          format_error/1]).
 
--export([map/2]).
-
 -include("../include/meta_syntax.hrl").
 
 -record(info,
@@ -32,14 +30,14 @@
               args = Args}).
 -define(META_CALL(Ln, Name, Args), ?REMOTE_CALL(Ln, meta, Name, Args)).
 -define(LN(Ln), ?META_CALL(Ln, line, [])).
--define(QUOTE(Ln, Var), ?META_CALL(Ln, quote, [Var])).
+-define(QUOTE(Ln, Expr), ?META_CALL(Ln, quote, [Expr])).
 
 -define(REIFY(Ln, Name), ?META_CALL(Ln, reify, [Name])).
 -define(REIFYTYPE(Ln, Name), ?META_CALL(Ln, reify_type, [Name])).
 -define(REIFY_ALL_TYPES(Ln), ?META_CALL(Ln, reify_types, [])).
 -define(REIFY_ALL(Ln), ?META_CALL(Ln, reify, [])).
 
--define(SPLICE(Ln, Var), ?META_CALL(Ln, splice, Var)).
+-define(SPLICE(Ln, Expr), ?META_CALL(Ln, splice, [Expr])).
 
 
 %%%
@@ -126,25 +124,21 @@ insert(#info{funs = Fs}) ->
             Form
     end.
 
-meta(?LN(Ln), Info) ->
-    {{integer, Ln, Ln}, Info};
 meta(?LOCAL_CALL(Ln, Name, Args) = Form, #info{meta = Ms} = Info) ->
     Fn = {Name, length(Args)},
     case lists:member(Fn, Ms) of
         true ->
-            {Args1, Info1} = traverse(fun meta/2, Info, Args),
-            eval_splice(Ln, [?LOCAL_CALL(Ln, Name, Args1)], Info1);
+            QFun = fun(Arg, Info1) -> meta(?QUOTE(Ln, Arg), Info1) end,
+            {Args1, Info2} = traverse(QFun, Info, Args),
+            eval_splice(Ln, ?LOCAL_CALL(Ln, Name, Args1), Info2);
         false ->
             traverse(fun meta/2, Info, Form)
     end;
 meta(?QUOTE(_, Quote), Info) ->
-    Quote1 = set_pos(Quote, 0),
-    {Ast, Info1} = term_to_ast(Quote1, Info),
+    {Ast, Info1} = term_to_ast(Quote, Info),
     {erl_syntax:revert(Ast), Info1};
-meta(#attribute{} = Form, Info) ->
-    {Form, Info};
 meta(?SPLICE(Ln, Splice), Info) ->
-    {Splice1, Info1} = traverse(fun meta/2, Info, Splice),
+    {Splice1, Info1} = process_splice(Splice, Info),
     eval_splice(Ln, Splice1, Info1);
 
 meta(?REIFY(Ln, {'fun', _, {function, Name, Arity}}),
@@ -190,6 +184,8 @@ meta(?REIFY_ALL_TYPES(_Ln), Info) ->
 meta(?REIFY_ALL(_Ln), Info) ->
     {erl_parse:abstract(Info), Info};
 
+meta(#attribute{} = Form, Info) ->
+    {Form, Info};
 
 meta(Form, Info) ->
     traverse(fun meta/2, Info, Form).
@@ -197,13 +193,18 @@ meta(Form, Info) ->
 
 term_to_ast(?QUOTE(Ln, _), _) ->
     meta_error(Ln, nested_quote);
-term_to_ast(?SPLICE(_Ln, [Splice]), Info) ->
-    traverse(fun meta/2, Info, Splice);
+term_to_ast(?SPLICE(_Ln, Form), Info) ->
+    meta(Form, Info);
 term_to_ast(Ls, Info) when is_list(Ls) ->
     {Ls1, _} = traverse(fun term_to_ast/2, Info, Ls),
     {erl_syntax:list(Ls1), Info};
 term_to_ast(T, Info) when is_tuple(T) ->
-    Ls = tuple_to_list(T),
+    Ls = case tuple_to_list(T) of
+             [Tag,Pos|Xs] when is_integer(Pos) ->
+                 [Tag,0|Xs];
+             Tls ->
+                 Tls
+         end,
     {Ls1, Info1} = traverse(fun term_to_ast/2, Info, Ls),
     {erl_syntax:tuple(Ls1), Info1};
 term_to_ast(I, Info) when is_integer(I) ->
@@ -212,6 +213,14 @@ term_to_ast(F, Info) when is_float(F) ->
     {erl_syntax:float(F), Info};
 term_to_ast(A, Info) when is_atom(A) ->
     {erl_syntax:atom(A), Info}.    
+
+
+process_splice(?SPLICE(Ln, _), _) ->
+    meta_error(Ln, nested_splice);
+process_splice(?QUOTE(_Ln, _Form) = Q, Info) ->
+    meta(Q, Info);
+process_splice(Form, Info) ->
+    traverse(fun process_splice/2, Info, Form).
 
 
 fetch(Name, Dict, Error) ->
@@ -301,9 +310,9 @@ eval_splice(Ln, Splice, Info) ->
     Bs = erl_eval:new_bindings(),
     Local = {eval, local_handler(Ln, Info)},
     try
-        {value, Val, _} = erl_eval:exprs(Splice, Bs, Local),
+        {value, Val, _} = erl_eval:expr(Splice, Bs, Local),
         Expr = erl_syntax:revert(Val),
-        Expr1 = set_pos(Expr, Ln),
+        {Expr1, _} = set_pos(Expr, Ln),
         erl_lint:exprs([Expr1], []),
         {Expr1, Info}
     catch
@@ -363,28 +372,15 @@ is_standard(_) ->
 %%
 %% Recursively set position (Line number) to Pos
 %%
+set_pos(Tuple, Pos) when
+      is_tuple(Tuple) andalso 
+      is_integer(element(2, Tuple)) ->
+    Tuple1 = setelement(2, Tuple, Pos),
+    traverse(fun set_pos/2, Pos, Tuple1);
 set_pos(Form, Pos) ->
-    Fun = fun(Tuple) when is_tuple(Tuple) andalso 
-                          is_integer(element(2, Tuple)) ->
-                  setelement(2, Tuple, Pos);
-             (Smt) ->
-                  Smt
-          end,
-    map(Fun, Form).
+    traverse(fun set_pos/2, Pos, Form).
 
 
-%%
-%% Depth-first map
-%%
-map(Fun, Form) when is_tuple(Form) ->
-    Fs = tuple_to_list(Form),
-    Fs1 = map(Fun, Fs),
-    Form1 = list_to_tuple(Fs1),
-    Fun(Form1);
-map(Fun, Fs) when is_list(Fs) ->
-    [map(Fun, F) || F <- Fs];
-map(Fun, Smt) ->
-    Fun(Smt).
     
 
 %%
@@ -434,7 +430,7 @@ external_error(Line, Module, Error) ->
 format_error(nested_quote) ->
     "meta:quote/1 is not allowed within another meta:quote/1";
 format_error(nested_splice) ->
-    "meta:splice/1 is not allowed within meta:quote/1";
+    "meta:splice/1 is not allowed within another meta:splice/1";
 format_error({reify_unknown_function, {Name, Arity}}) ->
     format("attempt to reify unknown function '~s/~b'", [Name, Arity]);
 format_error({reify_unknown_record, Name}) ->

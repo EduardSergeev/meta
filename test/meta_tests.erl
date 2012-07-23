@@ -68,17 +68,22 @@ quote_splice_test_() ->
     [{"Simple type quote with splice argiment",
       ?_test(
          begin
-             A = meta:quote(1),
-             Q1 = meta:quote(meta:splice(A) + 2),
-             Q2 = meta:quote(1 + 2),
+             A = ?q(1),
+             Q1 = ?q(?s(A) + 2),
+             Q2 = ?q(1 + 2),
              ?assertEqual(Q2, Q1)
-         end)}].
+         end)},
+     {"Anihilaation of quote(splice()) pairs",
+      [?_assertEqual(42, ?q(?s(42))),
+       ?_assertEqual(42, ?s(?q(42))),
+       ?_assertEqual(?q(42), ?q(?s(?q(42)))),
+       ?_assertEqual(42, ?s(?q(?s(?q(42)))))]}].
 
 %%
 %% Local function call in 'meta:splice'
 %%
 local() ->
-    meta:quote(42.2).
+    ?q(42.2).
 
 trans() ->
     local().
@@ -87,27 +92,22 @@ id(A) ->
     A.
 
 local(A) ->
-    meta:quote(meta:splice(A) + 1).
+    ?q(?s(A) + 1).
 
 local(Fun, A) ->
-    meta:quote((meta:splice(Fun))(meta:splice(A))).
+    ?q(?s(Fun)(?s(A))).
 
 
 local_call_test_() ->
-    [?_assertEqual(42.2,
-                   meta:splice(local())),
-     ?_assertEqual(42.2,
-                   meta:splice(trans())),
-     ?_assertEqual(42.2,
-                   meta:splice(id(id(trans())))),
-     ?_assertEqual(3,
-                   meta:splice(local(meta:quote(2)))),
+    [?_assertEqual(42.2, ?s(local())),
+     ?_assertEqual(42.2, ?s(trans())),
+     ?_assertEqual(42.2, ?s(id(id(trans())))),
+     ?_assertEqual(3, ?s(local(?q(2)))),
      ?_test(
         begin
-            R = meta:splice(
-                  local(
-                    meta:quote(fun(A) -> A + 3 end),
-                    meta:quote(2))),
+            R = ?s(local(
+                     ?q(fun(A) -> A + 3 end),
+                     ?q(2))),
             ?assertEqual(5, R)
         end)].
 
@@ -115,29 +115,23 @@ local_call_test_() ->
 %% Remote function call in 'meta:splice'
 %%
 remote_call_test_() ->
-    [?_assertEqual(42,
-                   meta:splice(remote:meta_integer())),
+    [?_assertEqual(42, ?s(remote:meta_integer())),
      {"Automatic splice with '-meta' attribute",
-      ?_assertEqual(42,
-                    meta_add(meta:quote(21), meta:quote(21)))},
+      ?_assertEqual(42, meta_add(21, 21))},
      {"Call via '-import' attribute",
       ?_test(
          begin
-             Inc = meta:splice(meta_inc()),
+             Inc = ?s(meta_inc()),
              ?assert(is_function(Inc)),
              ?assertEqual(3, Inc(2))
          end)},
-     ?_assertEqual(12.5,
-                   meta:splice(
-                     remote:trans(
-                       meta:quote(11),
-                       meta:quote(1.5))))].
+     ?_assertEqual(12.5, ?s(remote:trans(?q(11), ?q(1.5))))].
 
 %%
 %% quote manipulation test
 %%
 meta_call(F, A) ->
-    meta:quote((meta:splice(F))(meta:splice(A))).
+    ?q(?s(F)(?s(A))).
 
 unwind(N, QFun, QArg) ->
     F = fun(E, A) ->
@@ -149,14 +143,13 @@ p1(A) ->
     A + 1.
 
 unwind_fun_test() ->
-    QFunName = meta:quote(p1),
-    QArg = meta:quote(42),
+    QFunName = ?q(p1),
+    QArg = ?q(42),
     N = 3,
     QUnwinded = unwind(N, QFunName, QArg),
     ?assertEqual("p1(p1(p1(42)))",
                  erl_prettypr:format(QUnwinded)),
-    ?assertEqual(6,
-                 meta:splice(unwind(5, meta:quote(p1), meta:quote(1)))).
+    ?assertEqual(6, ?s(unwind(5, ?q(p1), ?q(1)))).
     
 
 %%
