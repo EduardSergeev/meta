@@ -14,8 +14,10 @@ recursive(0) ->
     ?q(0);
 recursive(N) ->
     A = N,
-    ?q({?s(erl_parse:abstract(A)), ?s(recursive(N-1))}).
+    ?q({?s(erl_parse:abstract(A)), ?s(recursive(A-1))}).
 
+gen(N) ->
+    N.
 
 test() ->
     ?s(recursive(5)).

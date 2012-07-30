@@ -343,20 +343,18 @@ local_handler(Ln, Info) ->
                     A = erl_syntax:application(M, F, Args),
                     Call = erl_syntax:revert(A),
                     Local = {eval, local_handler(Ln, Info)},
-                    Bs1 = filter_bs(Bs, Args),
-                    {value, Val, _} = erl_eval:expr(Call, Bs1, Local),
-                    {value, Val, Bs};
+                    erl_eval:expr(Call, Bs, Local);
                 error ->
                     case dict:is_key(Fn, Fs) of
                         true ->
                             {#function{clauses = Cs}, #info{} = Info1} = process_fun(Fn, Info),
+                            {Bs1, Args1} = hygienize(Bs, Args, Cs),
                             F = erl_syntax:fun_expr(Cs),
-                            A = erl_syntax:application(F, Args),
+                            A = erl_syntax:application(F, Args1),
                             Call = erl_syntax:revert(A),
                             Local = {eval, local_handler(Ln, Info1)},
-                            Bs1 = filter_bs(Bs, Args),
-                            {value, Val, _} = erl_eval:expr(Call, Bs1, Local),
-                            {value, Val, Bs};
+                            TVal = erl_eval:expr(Call, Bs1, Local),
+                            setelement(3, TVal, Bs);
                         false ->
                             meta_error(Ln, {splice_unknown_function, Fn})
                     end
@@ -368,14 +366,47 @@ collect_vars({var, _, Name} = Form, Set) ->
 collect_vars(Form, Set) ->
     traverse(fun collect_vars/2, Set, Form).
 
-filter_bs(Bs, Args) ->
-    {_, Vs} = collect_vars(Args, gb_sets:new()),
+hygienize(Bs, Args, Cs) ->
+    {_, CsNs} = collect_vars(Cs, gb_sets:new()),
+    {_, ArgNs} = collect_vars(Args, gb_sets:new()),
+    DNs = dict:from_list([ {N,escape(N,CsNs)}
+                           || N <- gb_sets:to_list(ArgNs) ]),
+    {Args1, _} = replace_vars(Args, DNs),
+    Bs1 = filter_replace_bs(Bs, ArgNs, DNs),
+    {Bs1, Args1}.
+    
+replace_vars({var, Ln, N}, DNs) ->
+    N1 = dict:fetch(N, DNs),
+    {{var, Ln, N1}, DNs};
+replace_vars(Form, DNs) ->
+    traverse(fun replace_vars/2, DNs, Form).
+
+filter_replace_bs(Bs, ArgNs, DNs) ->
     LBs = [ B || {N,_V} = B <- erl_eval:bindings(Bs),
-                 gb_sets:is_member(N, Vs) ],
+                 gb_sets:is_member(N, ArgNs) ],
     lists:foldl(
       fun({N,V}, Bs1) ->
-              erl_eval:add_binding(N,V,Bs1)
+              N1 = dict:fetch(N, DNs),
+              erl_eval:add_binding(N1,V,Bs1)
       end, erl_eval:new_bindings(), LBs).
+    
+escape(N, CsNs) ->
+    case gb_sets:is_member(N, CsNs) of
+        false ->
+            N;
+        true ->
+            escape_iter(N, 1, CsNs)
+    end.
+
+escape_iter(N, I, CsNs) ->
+    SN1 = lists:flatten(format("~s~B", [N,I])),
+    N1 = list_to_atom(SN1),
+    case gb_sets:is_member(N1, CsNs) of
+        false ->
+            N1;
+        true ->
+            escape_iter(N, I+1, CsNs)
+    end.
 
 
 %%

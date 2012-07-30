@@ -100,7 +100,9 @@ local(Fun, A) ->
 recursive(0) ->
     ?q(0);
 recursive(N) ->
-    ?q({?s(erl_parse:abstract(N)), ?s(recursive(N-1))}).
+    A = N,
+    B = id(N),
+    ?q({?s(erl_parse:abstract(A)), ?s(recursive(B-1))}).
 
 
 local_call_test_() ->
