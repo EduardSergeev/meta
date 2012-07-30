@@ -97,6 +97,11 @@ local(A) ->
 local(Fun, A) ->
     ?q(?s(Fun)(?s(A))).
 
+recursive(0) ->
+    ?q(0);
+recursive(N) ->
+    ?q({?s(erl_parse:abstract(N)), ?s(recursive(N-1))}).
+
 
 local_call_test_() ->
     [?_assertEqual(42.2, ?s(local())),
@@ -109,7 +114,8 @@ local_call_test_() ->
                      ?q(fun(A) -> A + 3 end),
                      ?q(2))),
             ?assertEqual(5, R)
-        end)].
+        end),
+     ?_assertEqual({3,{2,{1,0}}}, ?s(recursive(3)))].
 
 %%
 %% Remote function call in 'meta:splice'

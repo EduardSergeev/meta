@@ -343,7 +343,9 @@ local_handler(Ln, Info) ->
                     A = erl_syntax:application(M, F, Args),
                     Call = erl_syntax:revert(A),
                     Local = {eval, local_handler(Ln, Info)},
-                    erl_eval:expr(Call, Bs, Local);      
+                    Bs1 = filter_bs(Bs, Args),
+                    {value, Val, _} = erl_eval:expr(Call, Bs1, Local),
+                    {value, Val, Bs};
                 error ->
                     case dict:is_key(Fn, Fs) of
                         true ->
@@ -352,12 +354,29 @@ local_handler(Ln, Info) ->
                             A = erl_syntax:application(F, Args),
                             Call = erl_syntax:revert(A),
                             Local = {eval, local_handler(Ln, Info1)},
-                            erl_eval:expr(Call, Bs, Local);
+                            Bs1 = filter_bs(Bs, Args),
+                            {value, Val, _} = erl_eval:expr(Call, Bs1, Local),
+                            {value, Val, Bs};
                         false ->
                             meta_error(Ln, {splice_unknown_function, Fn})
                     end
             end
     end.  
+
+collect_vars({var, _, Name} = Form, Set) ->
+    {Form, gb_sets:add(Name, Set)};
+collect_vars(Form, Set) ->
+    traverse(fun collect_vars/2, Set, Form).
+
+filter_bs(Bs, Args) ->
+    {_, Vs} = collect_vars(Args, gb_sets:new()),
+    LBs = [ B || {N,_V} = B <- erl_eval:bindings(Bs),
+                 gb_sets:is_member(N, Vs) ],
+    lists:foldl(
+      fun({N,V}, Bs1) ->
+              erl_eval:add_binding(N,V,Bs1)
+      end, erl_eval:new_bindings(), LBs).
+
 
 %%
 %% Type reification functions
