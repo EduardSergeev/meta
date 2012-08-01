@@ -28,6 +28,11 @@
         #call{line = Ln,
               function = #atom{name = Name},
               args = Args}).
+-define(OP_CALL(Ln, Name, Arg1, Arg2),
+        #op{line = Ln,
+            name = Name,
+            arg1 = Arg1,
+            arg2 = Arg2}).
 -define(META_CALL(Ln, Name, Args), ?REMOTE_CALL(Ln, meta, Name, Args)).
 -define(LN(Ln), ?META_CALL(Ln, line, [])).
 -define(QUOTE(Ln, Expr), ?META_CALL(Ln, quote, [Expr])).
@@ -134,6 +139,14 @@ meta(?LOCAL_CALL(Ln, Name, Args) = Form, #info{meta = Ms} = Info) ->
         false ->
             traverse(fun meta/2, Info, Form)
     end;
+meta(?OP_CALL(Ln, Name, Arg1, Arg2) = Form, #info{meta = Ms} = Info) ->
+    Fn = {Name, 2},
+    case lists:member(Fn, Ms) of
+        true ->
+            meta(?LOCAL_CALL(Ln, Name, [Arg1, Arg2]), Info);
+        false ->
+            traverse(fun meta/2, Info, Form)
+    end;
 meta(?QUOTE(_, Quote), Info) ->
     {Ast, Info1} = term_to_ast(Quote, Info),
     {erl_syntax:revert(Ast), Info1};
@@ -195,10 +208,39 @@ term_to_ast(?QUOTE(Ln, _), _) ->
     meta_error(Ln, nested_quote);
 term_to_ast(?SPLICE(_Ln, Form), Info) ->
     meta(Form, Info);
+term_to_ast(?LOCAL_CALL(Ln, Name, Args) = Form, #info{meta = Ms} = Info) ->
+    Fn = {Name, length(Args)},
+    case lists:member(Fn, Ms) of
+        true ->
+            QFun = fun(Arg, Info1) -> meta(?QUOTE(Ln, Arg), Info1) end,
+            {Args1, Info2} = traverse(QFun, Info, Args),
+            {Form#call{args = Args1}, Info2};
+        false ->
+            tuple_to_ast(Form, Info)
+    end;
+term_to_ast(?OP_CALL(Ln, Name, Arg1, Arg2) = Form, #info{meta = Ms} = Info) ->
+    Fn = {Name, 2},
+    case lists:member(Fn, Ms) of
+        true ->
+            QFun = fun(Arg, Info1) -> meta(?QUOTE(Ln, Arg), Info1) end,
+            {[Arg11, Arg21], Info2} = traverse(QFun, Info, [Arg1, Arg2]),
+            {Form#op{arg1 = Arg11, arg2 = Arg21}, Info2};
+        false ->
+            tuple_to_ast(Form, Info)
+    end;
 term_to_ast(Ls, Info) when is_list(Ls) ->
     {Ls1, _} = traverse(fun term_to_ast/2, Info, Ls),
     {erl_syntax:list(Ls1), Info};
 term_to_ast(T, Info) when is_tuple(T) ->
+    tuple_to_ast(T, Info);
+term_to_ast(I, Info) when is_integer(I) ->
+    {erl_syntax:integer(I), Info};
+term_to_ast(F, Info) when is_float(F) ->
+    {erl_syntax:float(F), Info};
+term_to_ast(A, Info) when is_atom(A) ->
+    {erl_syntax:atom(A), Info}. 
+
+tuple_to_ast(T, Info) ->
     Ls = case tuple_to_list(T) of
              [Tag,Pos|Xs] when is_integer(Pos) ->
                  [Tag,0|Xs];
@@ -206,17 +248,27 @@ term_to_ast(T, Info) when is_tuple(T) ->
                  Tls
          end,
     {Ls1, Info1} = traverse(fun term_to_ast/2, Info, Ls),
-    {erl_syntax:tuple(Ls1), Info1};
-term_to_ast(I, Info) when is_integer(I) ->
-    {erl_syntax:integer(I), Info};
-term_to_ast(F, Info) when is_float(F) ->
-    {erl_syntax:float(F), Info};
-term_to_ast(A, Info) when is_atom(A) ->
-    {erl_syntax:atom(A), Info}.    
+    {erl_syntax:tuple(Ls1), Info1}.
 
 
 process_splice(?SPLICE(Ln, _), _) ->
     meta_error(Ln, nested_splice);
+process_splice(?LOCAL_CALL(Ln, Name, Args) = Form, #info{meta = Ms} = Info) ->
+    Fn = {Name, length(Args)},
+    case lists:member(Fn, Ms) of
+        true ->
+            meta_error(Ln, {nested_meta_function, {Name,length(Args)}});
+        false ->
+            traverse(fun process_splice/2, Info, Form)
+    end;
+process_splice(?OP_CALL(Ln, Name, _, _) = Form, #info{meta = Ms} = Info) ->
+    Fn = {Name, 2},
+    case lists:member(Fn, Ms) of
+        true ->
+            meta_error(Ln, {nested_meta_op, Name});
+        false ->
+            traverse(fun process_splice/2, Info, Form)
+    end;
 process_splice(?QUOTE(_Ln, _Form) = Q, Info) ->
     meta(Q, Info);
 process_splice(Form, Info) ->
@@ -481,8 +533,15 @@ format_error(nested_quote) ->
     "meta:quote/1 is not allowed within another meta:quote/1";
 format_error(nested_splice) ->
     "meta:splice/1 is not allowed within another meta:splice/1";
+format_error({nested_meta_function, {Name, Arity}}) ->
+    format("-meta function '~s/~b' is not allowed within meta:splice/1",
+           [Name, Arity]);                    
+format_error({nested_meta_op, Name}) ->
+    format("-meta operator '~s' is not allowed within meta:splice/1",
+           [Name]);                    
 format_error({reify_unknown_function, {Name, Arity}}) ->
-    format("attempt to reify unknown function '~s/~b'", [Name, Arity]);
+    format("attempt to reify unknown function '~s/~b'",
+           [Name, Arity]);
 format_error({reify_unknown_record, Name}) ->
     format("attempt to reify unknown record '#~s{}'", [Name]);
 format_error({reify_unknown_type, {Name,Args}}) ->
@@ -491,7 +550,8 @@ format_error({reify_unknown_type, {Name,Args}}) ->
 format_error({reify_unknown_record_type, Name}) ->
     format("attempt to reify unknown record type '#~s{}'", [Name]);
 format_error({reify_unknown_function_spec, {Name, Arity}}) ->
-    format("attempt to reify unknown function -spec '~s/~b'", [Name, Arity]);
+    format("attempt to reify unknown function -spec '~s/~b'",
+           [Name, Arity]);
 format_error({reify_unknown_attribute, Name}) ->
     format("attempt to reify unknown attribute '~s'", [Name]);
 format_error(invalid_splice) ->
@@ -507,7 +567,8 @@ format_error({splice_badarg, Arg}) ->
 format_error(splice_unknown_external_function) ->
     "Unknown remote function call in 'splice'";
 format_error({splice_unknown_function, {Name,Arity}}) ->
-    format("Unknown local function '~s/~b' used in 'meta:splice/1'", [Name,Arity]).
+    format("Unknown local function '~s/~b' used in 'meta:splice/1'",
+           [Name,Arity]).
     
 format(Format, Args) ->
     io_lib:format(Format, Args).

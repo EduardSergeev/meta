@@ -14,8 +14,14 @@
 
 -compile(export_all).
 
+%% auto-spliced local function
+-meta([meta_local/1]).
+%% auto-spliced local operator
+-meta(['=<'/2]).
+
 -import(remote, [meta_inc/0, meta_add/2]).
 -meta([meta_add/2]).
+
 
 %%
 %% meta:quote tests
@@ -65,7 +71,7 @@ splice_test_() ->
          end)}].
        
 quote_splice_test_() ->
-    [{"Simple type quote with splice argiment",
+    [{"Simple type quote with splice argument",
       ?_test(
          begin
              A = ?q(1),
@@ -77,7 +83,11 @@ quote_splice_test_() ->
       [?_assertEqual(42, ?q(?s(42))),
        ?_assertEqual(42, ?s(?q(42))),
        ?_assertEqual(?q(42), ?q(?s(?q(42)))),
-       ?_assertEqual(42, ?s(?q(?s(?q(42)))))]}].
+       ?_assertEqual(42, ?s(?q(?s(?q(42))))),
+       {"local -meta function in quote",
+        ?_assertEqual(?q(42 + 1), ?q(meta_local(42)))},
+       {"remote -meta function in quote",
+        ?_assertEqual(?q(42 + 42.0), ?q(meta_add(42, 42.0)))}]}].
 
 %%
 %% Local function call in 'meta:splice'
@@ -104,6 +114,14 @@ recursive(N) ->
     B = id(N),
     ?q({?s(erl_parse:abstract(A)), ?s(recursive(B-1))}).
 
+%% This one is auto-spliced via '-meta' attribute
+meta_local(QN) ->
+    ?q(?s(QN) + 1).
+
+%% -meta operator: meta-converts into fun call
+'=<'(QLeft, QRight) ->
+    ?q(?s(QLeft)(?s(QRight))).
+
 
 local_call_test_() ->
     [?_assertEqual(42.2, ?s(local())),
@@ -117,7 +135,10 @@ local_call_test_() ->
                      ?q(2))),
             ?assertEqual(5, R)
         end),
-     ?_assertEqual({3,{2,{1,0}}}, ?s(recursive(3)))].
+     ?_assertEqual({3,{2,{1,0}}}, ?s(recursive(3))),
+     ?_assertEqual(2, meta_local(1)),
+     {"-meta operator call",
+      ?_assertEqual(2, size =< (<<"42">>))}].
 
 %%
 %% Remote function call in 'meta:splice'
