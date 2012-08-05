@@ -222,9 +222,7 @@ term_to_ast(?OP_CALL(Ln, Name, Arg1, Arg2) = Form, #info{meta = Ms} = Info) ->
     Fn = {Name, 2},
     case lists:member(Fn, Ms) of
         true ->
-            QFun = fun(Arg, Info1) -> meta(?QUOTE(Ln, Arg), Info1) end,
-            {[Arg11, Arg21], Info2} = traverse(QFun, Info, [Arg1, Arg2]),
-            {Form#op{arg1 = Arg11, arg2 = Arg21}, Info2};
+            term_to_ast(?LOCAL_CALL(Ln, Name, [Arg1, Arg2]), Info);
         false ->
             tuple_to_ast(Form, Info)
     end;

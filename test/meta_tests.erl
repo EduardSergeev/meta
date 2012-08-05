@@ -138,7 +138,9 @@ local_call_test_() ->
      ?_assertEqual({3,{2,{1,0}}}, ?s(recursive(3))),
      ?_assertEqual(2, meta_local(1)),
      {"-meta operator call",
-      ?_assertEqual(2, size =< (<<"42">>))}].
+      ?_assertEqual(2, size =< <<"42">>)},
+     {"nested -meta operator",
+      ?_assertEqual(1, length =< integer_to_list(size =< <<"42">>))}].
 
 %%
 %% Remote function call in 'meta:splice'
