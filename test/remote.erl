@@ -5,20 +5,28 @@
 -include("../include/meta.hrl").
 
 meta_integer() ->
-    meta:quote(42).
+    ?q(42).
 
 meta_inc() ->
-    meta:quote(fun(A) -> A + 1 end).
+    ?q(fun(A) -> A + 1 end).
 
 meta_add(A, B) ->
-    meta:quote(meta:splice(A) + meta:splice(B)).
+    ?q(?sv(A) + ?sv(B)).
     
-
 trans(A, B) ->
     meta_add(A, B).
 
-    %% Add = fun(A,B) ->
-    %%               meta:splice(meta_add(meta:quote(A), meta:quote(B)))
-    %%       end,
-    %% Add(40,2).
-                  
+
+%% hygenic_splice(_G, L, 0) ->
+%%     begin
+%%         ?q({?sv(L)})
+%%     end;
+%% hygenic_splice(G, L, N) ->
+%%     ?q(begin
+%%            Var = ?s(G) + ?sv(L),
+%%            {Var, ?s(hygenic_splice(G, ?qv(Var), N-1))}
+%%        end).
+
+%% meta_var_test() ->
+%%     E = 1,
+%%     ?s(hygenic_splice(?qv(E), ?q(42), 2)).

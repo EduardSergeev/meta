@@ -75,15 +75,15 @@ quote_splice_test_() ->
       ?_test(
          begin
              A = ?q(1),
-             Q1 = ?q(?s(A) + 2),
+             Q1 = ?q(?sv(A) + 2),
              Q2 = ?q(1 + 2),
              ?assertEqual(Q2, Q1)
          end)},
      {"Anihilaation of quote(splice()) pairs",
-      [?_assertEqual(42, ?q(?s(42))),
+      [?_assertEqual(42, ?q(?sv(42))),
        ?_assertEqual(42, ?s(?q(42))),
-       ?_assertEqual(?q(42), ?q(?s(?q(42)))),
-       ?_assertEqual(42, ?s(?q(?s(?q(42))))),
+       ?_assertEqual(?q(42), ?q(?sv(?q(42)))),
+       ?_assertEqual(42, ?sv(?q(?sv(?q(42))))),
        {"local -meta function in quote",
         ?_assertEqual(?q(42 + 1), ?q(meta_local(42)))},
        {"remote -meta function in quote",
@@ -116,7 +116,7 @@ recursive(N) ->
 
 %% This one is auto-spliced via '-meta' attribute
 meta_local(QN) ->
-    ?q(?s(QN) + 1).
+    ?q(?sv(QN) + 1).
 
 %% -meta operator: meta-converts into fun call
 '=<'(QLeft, QRight) ->
@@ -140,7 +140,8 @@ local_call_test_() ->
      {"-meta operator call",
       ?_assertEqual(2, size =< <<"42">>)},
      {"nested -meta operator",
-      ?_assertEqual(1, length =< integer_to_list(size =< <<"42">>))}].
+      ?_assertEqual(1, length =< integer_to_list(size =< <<"42">>))}
+].
 
 %%
 %% Remote function call in 'meta:splice'
@@ -174,14 +175,33 @@ p1(A) ->
     A + 1.
 
 unwind_fun_test() ->
-    QFunName = ?q(p1),
-    QArg = ?q(42),
-    N = 3,
-    QUnwinded = unwind(N, QFunName, QArg),
-    ?assertEqual("p1(p1(p1(42)))",
-                 erl_prettypr:format(QUnwinded)),
-    ?assertEqual(6, ?s(unwind(5, ?q(p1), ?q(1)))).
+    %% QFunName = ?qv(p1),
+    %% QArg = ?qv(42),
+    %% N = 3,
+    %% QUnwinded = unwind(N, QFunName, QArg),
+    %% ?assertEqual("p1(p1(p1(42)))",
+    %%              erl_prettypr:format(QUnwinded)),
+    ?assertEqual(6, ?s(unwind(5, ?qv(p1), ?qv(1)))).
     
+
+%%
+%% Hygienic meta-variables  
+%%
+hygenic_splice(_G, L, 0) ->
+    begin
+        ?q({?sv(L)})
+    end;
+hygenic_splice(G, L, N) ->
+    ?q(begin
+           Var = ?s(G) + ?sv(L),
+           {Var, ?s(hygenic_splice(G, ?qv(Var), N-1))}
+       end).
+
+meta_var_test() ->
+    E = 1,
+    ?s(hygenic_splice(?qv(E), ?q(42), 2)).
+    
+
 
 %%
 %% Utilities

@@ -16,7 +16,8 @@
          imports = dict:new(),
          types = dict:new(),
          records = dict:new(),
-         funs = dict:new()}).
+         funs = dict:new(),
+         vars = gb_sets:new()}).
 
 -define(REMOTE_CALL(Ln, Mod, Name, Args),
         #call{line = Ln,
@@ -34,8 +35,8 @@
             arg1 = Arg1,
             arg2 = Arg2}).
 -define(META_CALL(Ln, Name, Args), ?REMOTE_CALL(Ln, meta, Name, Args)).
--define(LN(Ln), ?META_CALL(Ln, line, [])).
 -define(QUOTE(Ln, Expr), ?META_CALL(Ln, quote, [Expr])).
+-define(QUOTE_VERBATIM(Ln, Expr), ?META_CALL(Ln, quote_verbatim, [Expr])).
 
 -define(REIFY(Ln, Name), ?META_CALL(Ln, reify, [Name])).
 -define(REIFYTYPE(Ln, Name), ?META_CALL(Ln, reify_type, [Name])).
@@ -43,6 +44,10 @@
 -define(REIFY_ALL(Ln), ?META_CALL(Ln, reify, [])).
 
 -define(SPLICE(Ln, Expr), ?META_CALL(Ln, splice, [Expr])).
+-define(SPLICE_VERBATIM(Ln, Expr), ?META_CALL(Ln, splice_verbatim, [Expr])).
+
+-define(QUOTE_BLOCK(Ln, Expr), {quote, Ln, Expr}).
+-define(SPLICE_BLOCK(Ln, Expr), {splice, Ln, Expr}).
 
 
 %%%
@@ -129,13 +134,21 @@ insert(#info{funs = Fs}) ->
             Form
     end.
 
+
+meta(#function{} = Form, Info) ->
+    Info1 = Info#info{vars = gb_sets:new()},
+    traverse(fun meta/2, Info1, Form);
+meta(#var{name = Name} = Form, #info{vars = Vs} = Info) ->
+    Info1 = Info#info{vars = gb_sets:add(Name, Vs)},
+    traverse(fun meta/2, Info1, Form);
+
 meta(?LOCAL_CALL(Ln, Name, Args) = Form, #info{meta = Ms} = Info) ->
     Fn = {Name, length(Args)},
     case lists:member(Fn, Ms) of
         true ->
             QFun = fun(Arg, Info1) -> meta(?QUOTE(Ln, Arg), Info1) end,
             {Args1, Info2} = traverse(QFun, Info, Args),
-            eval_splice(Ln, ?LOCAL_CALL(Ln, Name, Args1), Info2);
+            eval_splice(Ln, ?LOCAL_CALL(Ln, Name, Args1), Info2, true);
         false ->
             traverse(fun meta/2, Info, Form)
     end;
@@ -150,9 +163,18 @@ meta(?OP_CALL(Ln, Name, Arg1, Arg2) = Form, #info{meta = Ms} = Info) ->
 meta(?QUOTE(_, Quote), Info) ->
     {Ast, Info1} = term_to_ast(Quote, Info),
     {erl_syntax:revert(Ast), Info1};
+meta(?QUOTE_VERBATIM(_, Quote), Info) ->
+    {Ast, Info1} = term_to_ast(Quote, Info),
+    TLs = [erl_syntax:atom(quote), erl_syntax:integer(0), Ast],
+    Ast1 = erl_syntax:tuple(TLs),
+    {erl_syntax:revert(Ast1), Info1};
+
 meta(?SPLICE(Ln, Splice), Info) ->
     {Splice1, Info1} = process_splice(Splice, Info),
-    eval_splice(Ln, Splice1, Info1);
+    eval_splice(Ln, Splice1, Info1, false);
+meta(?SPLICE_VERBATIM(Ln, Splice), Info) ->
+    {Splice1, Info1} = process_splice(Splice, Info),
+    eval_splice(Ln, Splice1, Info1, true);
 
 meta(?REIFY(Ln, {'fun', _, {function, Name, Arity}}),
       #info{funs = Fs} = Info) ->
@@ -206,12 +228,19 @@ meta(Form, Info) ->
 
 term_to_ast(?QUOTE(Ln, _), _) ->
     meta_error(Ln, nested_quote);
+term_to_ast(?QUOTE_VERBATIM(Ln, _), _) ->
+    meta_error(Ln, nested_quote);
 term_to_ast(?SPLICE(_Ln, Form), Info) ->
+    {Splice, Info1} = meta(Form, Info),
+    Tls = [erl_syntax:atom(splice), erl_syntax:integer(0), Splice],
+    {erl_syntax:tuple(Tls), Info1};
+term_to_ast(?SPLICE_VERBATIM(_Ln, Form), Info) ->
     meta(Form, Info);
-term_to_ast(?LOCAL_CALL(Ln, Name, Args) = Form, #info{meta = Ms} = Info) ->
+term_to_ast(?LOCAL_CALL(Ln, Name, Args) = Form, Info) ->
+    Ms = Info#info.meta,
     Fn = {Name, length(Args)},
     case lists:member(Fn, Ms) of
-        true ->
+        true ->            
             QFun = fun(Arg, Info1) -> meta(?QUOTE(Ln, Arg), Info1) end,
             {Args1, Info2} = traverse(QFun, Info, Args),
             {Form#call{args = Args1}, Info2};
@@ -268,6 +297,8 @@ process_splice(?OP_CALL(Ln, Name, _, _) = Form, #info{meta = Ms} = Info) ->
             traverse(fun process_splice/2, Info, Form)
     end;
 process_splice(?QUOTE(_Ln, _Form) = Q, Info) ->
+    meta(Q, Info);
+process_splice(?QUOTE_VERBATIM(_Ln, _Form) = Q, Info) ->
     meta(Q, Info);
 process_splice(Form, Info) ->
     traverse(fun process_splice/2, Info, Form).
@@ -356,12 +387,13 @@ info(Form, Info) ->
     traverse(fun info/2, Info, Form).
     
 
-eval_splice(Ln, Splice, Info) ->
+eval_splice(Ln, Splice, #info{vars = Vs} = Info, Verbatim) ->
     Bs = erl_eval:new_bindings(),
     Local = {eval, local_handler(Ln, Info)},
     try
         {value, Val, _} = erl_eval:expr(Splice, Bs, Local),
-        Expr = erl_syntax:revert(Val),
+        Val1 = post_splice(Val, Vs, Verbatim), 
+        Expr = erl_syntax:revert(Val1),
         {Expr1, _} = set_pos(Expr, Ln),
         erl_lint:exprs([Expr1], []),
         {Expr1, Info}
@@ -411,7 +443,7 @@ local_handler(Ln, Info) ->
             end
     end.  
 
-collect_vars({var, _, Name} = Form, Set) ->
+collect_vars(#var{name = Name} = Form, Set) ->
     {Form, gb_sets:add(Name, Set)};
 collect_vars(Form, Set) ->
     traverse(fun collect_vars/2, Set, Form).
@@ -458,7 +490,43 @@ escape_iter(N, I, CsNs) ->
             escape_iter(N, I+1, CsNs)
     end.
 
+post_splice(Expr, Vs, Verbatim) ->
+    {Expr1, _} = if
+                     Verbatim ->
+                         post_splice(Expr, {Vs, dict:new()});
+                     true ->
+                         hygienize_splice(Expr, {Vs, dict:new()})
+                 end,
+    Expr1.
 
+post_splice(?SPLICE_BLOCK(_Ln, Expr), {Vs, _}) ->
+    hygienize_splice(Expr, {Vs, dict:new()});
+post_splice(?QUOTE_BLOCK(_Ln, Expr), VInfo) ->
+    post_splice(Expr, VInfo);
+post_splice(Form, VInfo) ->
+    traverse(fun post_splice/2, VInfo, Form).
+
+hygienize_splice(?QUOTE_BLOCK(_Ln, Expr), VInfo) ->
+    {Expr1, _} = post_splice(Expr, VInfo),
+    {Expr1, VInfo};
+hygienize_splice(#var{name = Name} = Var, {Vs, Ms} = VInfo) ->
+    case dict:find(Name, Ms) of
+        {ok, Name1} ->
+            {Var#var{name = Name1}, VInfo};
+        error ->
+            Name1 = escape(Name, Vs),
+            Vs1 = gb_sets:add(Name1, Vs),
+            Ms1 = dict:store(Name, Name1, Ms),
+            {Var#var{name = Name1}, {Vs1, Ms1}}
+    end;
+hygienize_splice(?SPLICE_BLOCK(_Ln, Expr), {Vs, Ms}) ->
+    {Expr1, {Vs1, _}} = hygienize_splice(Expr, {Vs, dict:new()}),
+    {Expr1, {Vs1, Ms}};
+hygienize_splice(Form, VInfo) ->
+    traverse(fun hygienize_splice/2, VInfo, Form).
+
+
+                
 %%
 %% Type reification functions
 %%
