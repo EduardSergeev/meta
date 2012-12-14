@@ -8,10 +8,13 @@
 -export([parse_transform/2,
          format_error/1]).
 
+-export([hygienize_var/3]).
+
 -include("../include/meta_syntax.hrl").
 
 -record(info,
-        {meta = [],
+        {options = [],
+         meta = [],
          attributes = dict:new(),
          imports = dict:new(),
          types = dict:new(),
@@ -35,20 +38,30 @@
             arg1 = Arg1,
             arg2 = Arg2}).
 -define(META_CALL(Ln, Name, Args), ?REMOTE_CALL(Ln, meta, Name, Args)).
+
 -define(QUOTE(Ln, Expr), ?META_CALL(Ln, quote, [Expr])).
--define(QUOTE_VERBATIM(Ln, Expr), ?META_CALL(Ln, quote_verbatim, [Expr])).
+-define(SPLICE(Ln, Expr), ?META_CALL(Ln, splice, [Expr])).
+-define(REF(Ln, Var), ?META_CALL(Ln, ref, [Var])).
+-define(VERBATIM(Ln, Expr), ?META_CALL(Ln, verbatim, [Expr])).
+-define(EXTRACT(Ln, Expr), ?META_CALL(Ln, extract, [Expr])).
 
 -define(REIFY(Ln, Name), ?META_CALL(Ln, reify, [Name])).
 -define(REIFYTYPE(Ln, Name), ?META_CALL(Ln, reify_type, [Name])).
 -define(REIFY_ALL_TYPES(Ln), ?META_CALL(Ln, reify_types, [])).
 -define(REIFY_ALL(Ln), ?META_CALL(Ln, reify, [])).
 
--define(SPLICE(Ln, Expr), ?META_CALL(Ln, splice, [Expr])).
--define(SPLICE_VERBATIM(Ln, Expr), ?META_CALL(Ln, splice_verbatim, [Expr])).
+-record(q_info,
+        {info,
+         level,
+         vars = dict:new(),
+         refs,
+         splices = []}).
 
--define(QUOTE_BLOCK(Ln, Expr), {quote, Ln, Expr}).
--define(SPLICE_BLOCK(Ln, Expr), {splice, Ln, Expr}).
-
+-record(s_info,
+        {info,
+         level,
+         refs,
+         splices = []}).
 
 %%%
 %%% API
@@ -92,18 +105,39 @@ error(Module, Error) ->
 error(Module, Error, Arg) ->
     throw({external_error, Module, {Error, Arg}}).
 
+
+
+hygienize_var('_', Vars, Maps) ->
+    {'_', Vars, Maps};
+hygienize_var(VarName, Vars, Maps) ->
+    case dict:find(VarName, Maps) of
+        {ok, NewVarName} ->
+            {NewVarName, Vars, Maps};
+        error ->
+            {NewVarName, Vars1} =
+                case gb_sets:is_member(VarName, Vars) of
+                    true ->
+                        New = escape(VarName, Vars),
+                        {New, gb_sets:add(New, Vars)};
+                    false ->
+                        {VarName, gb_sets:add(VarName, Vars)}
+                end,
+            Maps1 = dict:store(VarName, NewVarName, Maps),
+            {NewVarName, Vars1, Maps1}
+    end.
+            
     
 
 parse_transform(Forms, _Options) ->
-    %%io:format("~p", [Forms]),
     {Forms1, Info} = traverse(fun info/2, #info{}, Forms),
     %%io:format("~p", [Info]),
     Funs = [K || {K,_V} <- dict:to_list(Info#info.funs)],
     {_, Info1} = safe_mapfoldl(fun process_fun/2, Info, Funs),
-    %% io:format("~p", [Info1]),
+    %%io:format("~p", [Info1]),
     Forms2 = lists:map(insert(Info1), Forms1),
-    %%io:format("~p", [Forms2]),
-    %%io:format("~s~n", [erl_prettypr:format(erl_syntax:form_list(Forms2))]),
+    %% io:format("~p", [Forms2]),
+    %% io:format("~s~n", [erl_prettypr:format(erl_syntax:form_list(Forms2))]),
+    dump_code(Forms2, Info1),
     Forms2.
 
 
@@ -116,9 +150,12 @@ process_fun(Fun, #info{funs = Fs} = Info) ->
         State =:= processed ->
             {Def, Info};
         State =:= raw ->
-            {Def1, #info{funs = Fs1} = Info1} = meta(Def, Info),
-            Fs2 = dict:store(Fun, {Def1, processed}, Fs1),
-            {Def1, Info1#info{funs = Fs2}}
+            {Def1, Info1} = expand_meta(Def, Info),
+            {Def2, #info{funs = Fs1} = Info2} = meta(Def1, Info1),
+            Fs2 = dict:store(Fun, {Def2, processed}, Fs1),
+            {Def2, Info2#info{funs = Fs2}};
+        true ->
+            error({invalid_state, State})
     end.
 
 insert(#info{funs = Fs}) ->
@@ -134,6 +171,38 @@ insert(#info{funs = Fs}) ->
             Form
     end.
 
+expand_meta(?LOCAL_CALL(Ln, Name, Args) = Form, #info{meta = Ms} = Info) ->
+    Fn = {Name, length(Args)},
+    case lists:member(Fn, Ms) of
+        true ->
+            {Args1, Info1} = expand_meta(Args, Info),
+            Args2 = [quote_arg(Ln, A) || A <- Args1],
+            {?SPLICE(Ln, Form#call{args = Args2}), Info1};
+        false ->
+            traverse(fun expand_meta/2, Info, Form)
+             end;
+expand_meta(?OP_CALL(Ln, Name, Arg1, Arg2) = Form, #info{meta = Ms} = Info) ->
+    Fn = {Name, 2},
+    case lists:member(Fn, Ms) of
+        true ->
+            expand_meta(?LOCAL_CALL(Ln, Name, [Arg1, Arg2]), Info);
+        false ->
+            traverse(fun expand_meta/2, Info, Form)
+    end;
+expand_meta(Form, Info) ->
+     traverse(fun expand_meta/2, Info, Form).
+
+quote_arg(_, ?QUOTE(_, _) = Quote) ->
+    Quote;
+quote_arg(_, ?VERBATIM(_, _) = Verbatim) ->
+    Verbatim;
+quote_arg(_, ?REF(_, _) = Ref) ->
+    Ref;
+quote_arg(_, ?SPLICE(_, Expr)) ->
+    Expr;
+quote_arg(Ln, Arg) ->
+    ?QUOTE(Ln, Arg).
+
 
 meta(#function{} = Form, Info) ->
     Info1 = Info#info{vars = gb_sets:new()},
@@ -142,39 +211,33 @@ meta(#var{name = Name} = Form, #info{vars = Vs} = Info) ->
     Info1 = Info#info{vars = gb_sets:add(Name, Vs)},
     traverse(fun meta/2, Info1, Form);
 
-meta(?LOCAL_CALL(Ln, Name, Args) = Form, #info{meta = Ms} = Info) ->
-    Fn = {Name, length(Args)},
-    case lists:member(Fn, Ms) of
-        true ->
-            QFun = fun(Arg, Info1) -> meta(?QUOTE(Ln, Arg), Info1) end,
-            {Args1, Info2} = traverse(QFun, Info, Args),
-            eval_splice(Ln, ?LOCAL_CALL(Ln, Name, Args1), Info2, true);
-        false ->
-            traverse(fun meta/2, Info, Form)
-    end;
-meta(?OP_CALL(Ln, Name, Arg1, Arg2) = Form, #info{meta = Ms} = Info) ->
-    Fn = {Name, 2},
-    case lists:member(Fn, Ms) of
-        true ->
-            meta(?LOCAL_CALL(Ln, Name, [Arg1, Arg2]), Info);
-        false ->
-            traverse(fun meta/2, Info, Form)
-    end;
-meta(?QUOTE(_, Quote), Info) ->
-    {Ast, Info1} = term_to_ast(Quote, Info),
-    {erl_syntax:revert(Ast), Info1};
-meta(?QUOTE_VERBATIM(_, Quote), Info) ->
-    {Ast, Info1} = term_to_ast(Quote, Info),
-    TLs = [erl_syntax:atom(quote), erl_syntax:integer(0), Ast],
-    Ast1 = erl_syntax:tuple(TLs),
-    {erl_syntax:revert(Ast1), Info1};
+meta(?QUOTE(_, Expr), Info) ->
+    QI = #q_info
+        {level = 1, info = Info,
+         refs = dict:from_list(
+                  [{V,0} || V <- gb_sets:to_list(Info#info.vars)])},
+    {Expr1, #q_info{info = Info1}} = process_quote(Expr, QI),
+    {Expr1, Info1};
+
+meta(?VERBATIM(_, Expr), Info) ->
+    QI = #q_info
+        {level = 1,
+         info = Info,
+         refs = dict:from_list(
+                  [{V,0} || V <- gb_sets:to_list(Info#info.vars)])},
+    {Expr1, #q_info{info = Info1}} = process_verbatim(Expr, QI),
+    {Expr1, Info1};
+
+meta(?REF(Ln, _), _) ->
+    meta_error(Ln, standalone_ref);
 
 meta(?SPLICE(Ln, Splice), Info) ->
-    {Splice1, Info1} = process_splice(Splice, Info),
-    eval_splice(Ln, Splice1, Info1, false);
-meta(?SPLICE_VERBATIM(Ln, Splice), Info) ->
-    {Splice1, Info1} = process_splice(Splice, Info),
-    eval_splice(Ln, Splice1, Info1, true);
+    SI = #s_info
+        {level = 0, info = Info,
+         refs = dict:from_list(
+                  [{V,0} || V <- gb_sets:to_list(Info#info.vars)])},
+    {Splice1, SI1} = process_splice(Splice, SI),
+    eval_splice(Ln, Splice1, SI1#s_info.info);   
 
 meta(?REIFY(Ln, {'fun', _, {function, Name, Arity}}),
       #info{funs = Fs} = Info) ->
@@ -226,83 +289,231 @@ meta(Form, Info) ->
     traverse(fun meta/2, Info, Form).
 
 
+process_quote(Quote, QI) ->
+    {Ast, QI1} = term_to_ast(Quote, QI),
+    R = build_hygienizer(Ast, QI1),
+    {R, QI1}.
+
+term_to_ast(#var{name = Name} = Var, QI) ->
+    Vs = QI#q_info.vars,
+    Rs = QI#q_info.refs,
+    Level = QI#q_info.level,
+    Vs1 = case dict:find(Name, Vs) of
+              {ok, V} ->
+                  Vs;
+              error ->
+                  Level = Level,
+                  Index = dict:size(Vs),
+                  VN = make_atom('Var', Level, Index),
+                  V = erl_syntax:variable(VN),
+                  dict:store(Name, V, Vs)
+          end,
+    Rs1 = dict:store(Name, Level, Rs),
+    {Ast, _} = tuple_to_ast(Var, QI),
+    {Ast1, _} = replace(Ast, {{tree,atom,{attr,0,[],none},Name}, V}),
+    {Ast1, QI#q_info{vars = Vs1, refs = Rs1}};
 term_to_ast(?QUOTE(Ln, _), _) ->
     meta_error(Ln, nested_quote);
-term_to_ast(?QUOTE_VERBATIM(Ln, _), _) ->
-    meta_error(Ln, nested_quote);
-term_to_ast(?SPLICE(_Ln, Form), Info) ->
-    {Splice, Info1} = meta(Form, Info),
-    Tls = [erl_syntax:atom(splice), erl_syntax:integer(0), Splice],
-    {erl_syntax:tuple(Tls), Info1};
-term_to_ast(?SPLICE_VERBATIM(_Ln, Form), Info) ->
-    meta(Form, Info);
-term_to_ast(?LOCAL_CALL(Ln, Name, Args) = Form, Info) ->
-    Ms = Info#info.meta,
-    Fn = {Name, length(Args)},
-    case lists:member(Fn, Ms) of
-        true ->            
-            QFun = fun(Arg, Info1) -> meta(?QUOTE(Ln, Arg), Info1) end,
-            {Args1, Info2} = traverse(QFun, Info, Args),
-            {Form#call{args = Args1}, Info2};
-        false ->
-            tuple_to_ast(Form, Info)
-    end;
-term_to_ast(?OP_CALL(Ln, Name, Arg1, Arg2) = Form, #info{meta = Ms} = Info) ->
-    Fn = {Name, 2},
-    case lists:member(Fn, Ms) of
-        true ->
-            term_to_ast(?LOCAL_CALL(Ln, Name, [Arg1, Arg2]), Info);
-        false ->
-            tuple_to_ast(Form, Info)
-    end;
-term_to_ast(Ls, Info) when is_list(Ls) ->
-    {Ls1, _} = traverse(fun term_to_ast/2, Info, Ls),
-    {erl_syntax:list(Ls1), Info};
-term_to_ast(T, Info) when is_tuple(T) ->
-    tuple_to_ast(T, Info);
-term_to_ast(I, Info) when is_integer(I) ->
-    {erl_syntax:integer(I), Info};
-term_to_ast(F, Info) when is_float(F) ->
-    {erl_syntax:float(F), Info};
-term_to_ast(A, Info) when is_atom(A) ->
-    {erl_syntax:atom(A), Info}. 
+term_to_ast(?SPLICE(_, Expr), QI) ->
+    Level = QI#q_info.level,
+    SI = #s_info
+        {level = Level + 1,
+         info = QI#q_info.info,
+         refs = QI#q_info.refs,
+         splices = QI#q_info.splices},
+    {SExpr, SI1} = process_splice(Expr, SI),
+    Ss = SI1#s_info.splices,
+    SV = make_atom('S', Level, length(Ss)),
+    QI1 = QI#q_info
+        {splices = [{SV,SExpr} | Ss],
+         info = SI1#s_info.info},
+    {erl_syntax:variable(SV), QI1};
+term_to_ast(?REF(Ln, _), _) ->
+    meta_error(Ln, ref_in_quote);
+term_to_ast(?VERBATIM(Ln, _), _) ->
+    meta_error(Ln, verbatim_in_quote);
+term_to_ast(Ls, QI) when is_list(Ls) ->
+    {Ls1, QI1} = traverse(fun term_to_ast/2, QI, Ls),
+    {erl_syntax:list(Ls1), QI1};
+term_to_ast(T, QI) when is_tuple(T) ->
+    tuple_to_ast(T, QI);
+term_to_ast(I, QI) when is_integer(I) ->
+    {erl_syntax:integer(I), QI};
+term_to_ast(F, QI) when is_float(F) ->
+    {erl_syntax:float(F), QI};
+term_to_ast(A, QI) when is_atom(A) ->
+    {erl_syntax:atom(A), QI}. 
 
-tuple_to_ast(T, Info) ->
+tuple_to_ast(T, QI) ->
     Ls = case tuple_to_list(T) of
              [Tag,Pos|Xs] when is_integer(Pos) ->
                  [Tag,0|Xs];
              Tls ->
                  Tls
          end,
-    {Ls1, Info1} = traverse(fun term_to_ast/2, Info, Ls),
-    {erl_syntax:tuple(Ls1), Info1}.
+    {Ls1, QI1} = traverse(fun term_to_ast/2, QI, Ls),
+    {erl_syntax:tuple(Ls1), QI1}.
 
 
-process_splice(?SPLICE(Ln, _), _) ->
+replace(Form, {Form, NewForm} = Info) ->
+    {NewForm, Info};
+replace(Form, Info) ->
+    traverse(fun replace/2, Info, Form).
+
+
+build_hygienizer(Ast, QI) ->
+    Vs = dict:to_list(QI#q_info.vars),
+    Ss = QI#q_info.splices,
+    Level = QI#q_info.level,
+    {VEs, IV} = hygienize_vars(Vs, Level),
+    {SEs, IS} = hygienize_splices(lists:reverse(Ss), Level, IV),
+    EMaps0 = case VEs of
+                 [] ->
+                     [];
+                 _ ->
+                     QMaps0 = erl_syntax:variable(make_atom('_Maps', Level, 0)),
+                     M = erl_syntax:atom(dict),
+                     F = erl_syntax:atom(new),
+                     QApp = erl_syntax:application(M, F, []),
+                     [erl_syntax:match_expr(QMaps0, QApp)]
+             end,
+    QVars0 = erl_syntax:variable(make_atom('Vars', Level, 0)),
+    QVarsN = erl_syntax:variable(make_atom('Vars', Level, IS)),
+    QRes = erl_syntax:tuple([Ast, QVarsN]),
+    Body = EMaps0 ++ VEs ++ SEs ++ [QRes],
+    Cl = erl_syntax:clause([QVars0], none, Body), 
+    E = erl_syntax:fun_expr([Cl]),
+    erl_syntax:revert(E).
+
+hygienize_vars(Vs, Level) ->
+    Fun = fun({V,QV}, I) ->
+                  QVars1 = erl_syntax:variable(make_atom('Vars', Level, I+1)),
+                  QMaps1 = erl_syntax:variable(make_atom('_Maps', Level, I+1)),
+                  QPat = erl_syntax:tuple([QV, QVars1, QMaps1]),
+                  M = erl_syntax:atom(?MODULE),
+                  F = erl_syntax:atom(hygienize_var),
+                  QAV = erl_syntax:atom(V),
+                  QVars = erl_syntax:variable(make_atom('Vars', Level, I)),
+                  QMaps = erl_syntax:variable(make_atom('_Maps', Level, I)),
+                  QArgs = [QAV, QVars, QMaps],
+                  QApp = erl_syntax:application(M, F, QArgs),
+                  Exp = erl_syntax:match_expr(QPat, QApp),
+                  {Exp, I+1}
+          end,
+    lists:mapfoldl(Fun, 0, Vs).
+
+hygienize_splices(Ss, Level, NI) ->
+    Fun = fun({V,Expr}, I) ->
+                  QV = erl_syntax:variable(V),
+                  QVars1 = erl_syntax:variable(make_atom('Vars', Level, I+1)),
+                  QPat = erl_syntax:tuple([QV, QVars1]),
+                  QVars = erl_syntax:variable(make_atom('Vars', Level, I)),
+                  QApp = erl_syntax:application(Expr, [QVars]),
+                  Exp = erl_syntax:match_expr(QPat, QApp),
+                  {Exp, I+1}
+          end,
+    lists:mapfoldl(Fun, NI, Ss).
+    
+
+process_splice(Expr, SI) ->
+    {Ast, SI1} = ast_to_ast(Expr, SI),
+    Ast1 = erl_syntax:revert(Ast),
+    {Ast1, SI1}.
+
+ast_to_ast(?SPLICE(Ln, _), _) ->
     meta_error(Ln, nested_splice);
-process_splice(?LOCAL_CALL(Ln, Name, Args) = Form, #info{meta = Ms} = Info) ->
-    Fn = {Name, length(Args)},
-    case lists:member(Fn, Ms) of
-        true ->
-            meta_error(Ln, {nested_meta_function, {Name,length(Args)}});
-        false ->
-            traverse(fun process_splice/2, Info, Form)
-    end;
-process_splice(?OP_CALL(Ln, Name, _, _) = Form, #info{meta = Ms} = Info) ->
-    Fn = {Name, 2},
-    case lists:member(Fn, Ms) of
-        true ->
-            meta_error(Ln, {nested_meta_op, Name});
-        false ->
-            traverse(fun process_splice/2, Info, Form)
-    end;
-process_splice(?QUOTE(_Ln, _Form) = Q, Info) ->
-    meta(Q, Info);
-process_splice(?QUOTE_VERBATIM(_Ln, _Form) = Q, Info) ->
-    meta(Q, Info);
-process_splice(Form, Info) ->
-    traverse(fun process_splice/2, Info, Form).
+ast_to_ast(?VERBATIM(_, Expr), SI) ->
+    QI = #q_info
+        {level = SI#s_info.level + 1,
+         info = SI#s_info.info,
+         refs = SI#s_info.refs},
+    {Ast, QI1} = process_verbatim(Expr, QI),
+    {Ast, SI#s_info{info = QI1#q_info.info}};
+ast_to_ast(?QUOTE(_Ln, Form), SI) ->
+    QI = #q_info
+        {level = SI#s_info.level + 1,
+         info = SI#s_info.info,
+         refs = SI#s_info.refs},
+    {Ast, QI1} = process_quote(Form, QI),
+    {Ast, SI#s_info{info = QI1#q_info.info}};
+ast_to_ast(?REF(Ln, #var{name = Name} = Var), SI) ->
+    Vs = SI#s_info.refs,
+    Level = SI#s_info.level,
+    case dict:find(Name, Vs) of
+        {ok, 0} ->
+            {QVar, _} = tuple_to_ast(Var, #q_info{level = 0}),
+            QFunVar = erl_syntax:variable(make_atom('Vars', 1, 0)),
+            Body = [erl_syntax:tuple([QVar, QFunVar])],
+            Cl = erl_syntax:clause([QFunVar], none, Body), 
+            E = erl_syntax:fun_expr([Cl]),
+            {erl_syntax:revert(E), SI};
+        {ok, VarLevel} ->
+            QVar = erl_syntax:variable(make_atom('Var', Level+1, 0)),
+            QVars1 = erl_syntax:underscore(),
+            QMaps1 = erl_syntax:underscore(),
+            QPat = erl_syntax:tuple([QVar, QVars1, QMaps1]),
+            M = erl_syntax:atom(?MODULE),
+            F = erl_syntax:atom(hygienize_var),
+            QAV = erl_syntax:atom(Name),
+            QVars = erl_syntax:variable(make_atom('Vars', VarLevel, 0)),
+            QMaps = erl_syntax:variable(make_atom('_Maps', VarLevel, 0)),
+            QArgs = [QAV, QVars, QMaps],
+            QApp = erl_syntax:application(M, F, QArgs),
+            Expr = erl_syntax:match_expr(QPat, QApp),
+            QFunVar = erl_syntax:variable(make_atom('Vars', Level+1, 0)),
+            
+            {Ast, _} = tuple_to_ast(Var, #q_info{level = VarLevel}),
+            {Ast1, _} = replace(Ast, {{tree,atom,{attr,0,[],none},Name}, QVar}),
 
+            Res = erl_syntax:tuple([Ast1, QFunVar]),
+            Body = [Expr, Res],
+            Cl = erl_syntax:clause([QFunVar], none, Body), 
+            E = erl_syntax:fun_expr([Cl]),
+            {erl_syntax:revert(E), SI};
+        error ->
+            meta_error(Ln, {unknow_ref, Name})
+    end;
+ast_to_ast(?EXTRACT(_, Expr), SI) ->
+    {SExpr, SI1} = process_splice(Expr, SI),
+    Ss = SI1#s_info.splices,
+    Level = SI1#s_info.level,
+    SV = make_atom('S', Level-1, length(Ss)),
+    SI2 = SI1#s_info
+        {splices = Ss ++ [{SV,SExpr}]},
+    {erl_syntax:revert(erl_syntax:variable(SV)), SI2};
+
+ast_to_ast(?REIFY_ALL(_Ln), SI) ->
+    {erl_syntax:revert(erl_parse:abstract(SI#s_info.info)), SI};
+ast_to_ast(Form, SI) ->
+    traverse(fun ast_to_ast/2, SI, Form).
+
+
+
+process_verbatim(Verbatim, QI) ->
+    {Ast, QI1} = verbatim_to_ast(Verbatim, QI),
+    R = build_hygienizer(Ast, QI1),
+    {R, QI1}.
+
+verbatim_to_ast(?QUOTE(Ln, _), _) ->
+    meta_error(Ln, quote_in_verbatim);
+verbatim_to_ast(?SPLICE(_, Expr), QI) ->
+    Level = QI#q_info.level,
+    SI = #s_info
+        {level = Level + 1,
+         info = QI#q_info.info,
+         refs = QI#q_info.refs},
+    {SExpr, SI1} = process_splice(Expr, SI),
+    Ss = QI#q_info.splices,
+    SV = make_atom('S', Level, length(Ss)),
+    QI1 = QI#q_info
+        {splices = [{SV,SExpr} | Ss],
+         info = SI1#s_info.info},
+    {erl_syntax:revert(erl_syntax:variable(SV)), QI1};
+verbatim_to_ast(?REIFY_ALL(_Ln), QI) ->
+    {erl_parse:abstract(QI#q_info.info), QI};
+verbatim_to_ast(Form, QI) ->
+    traverse(fun verbatim_to_ast/2, QI, Form).
+    
 
 fetch(Name, Dict, Error) ->
     case dict:find(Name, Dict) of
@@ -347,6 +558,11 @@ info(#attribute{name = meta, arg = Meta} = Form,
      #info{meta = Ms} = Info) ->
     Info1 = Info#info{meta = Ms ++ Meta},
     {Form, Info1};
+info(#attribute{name = meta_opts, arg = Opts} = Form,
+     #info{options = Os} = Info) ->
+    Os1 = Os ++ if is_list(Opts) -> Opts ; true -> [Opts] end,
+    Info1 = Info#info{options = Os1},
+    {Form, Info1};
 info(#attribute{name = import, arg = {Mod, Fs}} = Form,
      #info{imports = Is} = Info) ->
     Is1 = lists:foldl(fun(F,D) -> dict:store(F, {Mod,F}, D) end, Is, Fs),
@@ -387,13 +603,12 @@ info(Form, Info) ->
     traverse(fun info/2, Info, Form).
     
 
-eval_splice(Ln, Splice, #info{vars = Vs} = Info, Verbatim) ->
+eval_splice(Ln, Splice, #info{vars = Vs} = Info) ->
     Bs = erl_eval:new_bindings(),
     Local = {eval, local_handler(Ln, Info)},
     try
-        {value, Val, _} = erl_eval:expr(Splice, Bs, Local),
-        Val1 = post_splice(Val, Vs, Verbatim), 
-        Expr = erl_syntax:revert(Val1),
+        {value, Fun, _} = erl_eval:expr(Splice, Bs, Local),
+        {Expr, _} = Fun(Vs),
         {Expr1, _} = set_pos(Expr, Ln),
         erl_lint:exprs([Expr1], []),
         {Expr1, Info}
@@ -430,11 +645,12 @@ local_handler(Ln, Info) ->
                     case dict:is_key(Fn, Fs) of
                         true ->
                             {#function{clauses = Cs}, #info{} = Info1} = process_fun(Fn, Info),
+                            Local = {eval, local_handler(Ln, Info1)},
                             {Bs1, Args1} = hygienize(Bs, Args, Cs),
+
                             F = erl_syntax:fun_expr(Cs),
                             A = erl_syntax:application(F, Args1),
                             Call = erl_syntax:revert(A),
-                            Local = {eval, local_handler(Ln, Info1)},
                             TVal = erl_eval:expr(Call, Bs1, Local),
                             setelement(3, TVal, Bs);
                         false ->
@@ -450,27 +666,59 @@ collect_vars(Form, Set) ->
 
 hygienize(Bs, Args, Cs) ->
     {_, CsNs} = collect_vars(Cs, gb_sets:new()),
-    {_, ArgNs} = collect_vars(Args, gb_sets:new()),
-    DNs = dict:from_list([ {N,escape(N,CsNs)}
-                           || N <- gb_sets:to_list(ArgNs) ]),
-    {Args1, _} = replace_vars(Args, DNs),
-    Bs1 = filter_replace_bs(Bs, ArgNs, DNs),
+    SBs = gb_sets:from_list([ N || {N,_} <- erl_eval:bindings(Bs) ]),
+    Mss = {SBs, dict:new(), CsNs},
+    {Args1, {_, BMs1, _}} = lists:mapfoldl(
+                             fun hygienize_arg/2,
+                             Mss, Args),
+    Bs1 = filter_replace_bs(Bs, BMs1),
     {Bs1, Args1}.
-    
-replace_vars({var, Ln, N}, DNs) ->
-    N1 = dict:fetch(N, DNs),
-    {{var, Ln, N1}, DNs};
-replace_vars(Form, DNs) ->
-    traverse(fun replace_vars/2, DNs, Form).
 
-filter_replace_bs(Bs, ArgNs, DNs) ->
-    LBs = [ B || {N,_V} = B <- erl_eval:bindings(Bs),
-                 gb_sets:is_member(N, ArgNs) ],
+hygienize_arg(Arg, {Bs, BMs, CsNs}) ->
+    TMs = dict:new(),
+    Mss = {Bs, BMs, TMs, CsNs},
+    {Arg1, {Bs, BMs1, _, CsNs1}} = replace_vars(Arg, Mss),
+    {Arg1, {Bs, BMs1, CsNs1}}.
+
+hyg_var(Name, {Bs, BMs, TMs, CsNs}) ->
+    case gb_sets:is_member(Name, Bs) of
+        true ->
+            case dict:find(Name, BMs) of
+                {ok, NewName} ->
+                    {NewName, {Bs, BMs, TMs, CsNs}};
+                error ->
+                    NewName = escape(Name, CsNs),
+                    BMs1 = dict:store(Name, NewName, BMs),
+                    CsNs1 = gb_sets:add(NewName, CsNs),
+                    {NewName, {Bs, BMs1, TMs, CsNs1}}
+            end;
+        false ->
+            case dict:find(Name, TMs) of
+                {ok, NewName} ->
+                    {NewName, {Bs, BMs, TMs, CsNs}};
+                error ->
+                    NewName = escape(Name, CsNs),
+                    TMs1 = dict:store(Name, NewName, TMs),
+                    CsNs1 = gb_sets:add(NewName, CsNs),
+                    {NewName, {Bs, BMs, TMs1, CsNs1}}
+            end
+    end.
+                
+replace_vars({var, _, '_'} = Var, Mss) ->
+    {Var, Mss};
+replace_vars({var, Ln, N}, Mss) ->
+    {N1, Mss1} = hyg_var(N, Mss),
+    {{var, Ln, N1}, Mss1};
+replace_vars(Form, Mss) ->
+    traverse(fun replace_vars/2, Mss, Form).
+
+filter_replace_bs(Bs, BMs) ->
+    NVMs = [ {dict:find(N, BMs), V} || {N, V} <- erl_eval:bindings(Bs) ],
+    NVs = [ {N1,V} || {{ok, N1}, V} <- NVMs ],
     lists:foldl(
-      fun({N,V}, Bs1) ->
-              N1 = dict:fetch(N, DNs),
+      fun({N1,V}, Bs1) ->
               erl_eval:add_binding(N1,V,Bs1)
-      end, erl_eval:new_bindings(), LBs).
+      end, erl_eval:new_bindings(), NVs).
     
 escape(N, CsNs) ->
     case gb_sets:is_member(N, CsNs) of
@@ -489,42 +737,6 @@ escape_iter(N, I, CsNs) ->
         true ->
             escape_iter(N, I+1, CsNs)
     end.
-
-post_splice(Expr, Vs, Verbatim) ->
-    {Expr1, _} = if
-                     Verbatim ->
-                         post_splice(Expr, {Vs, dict:new()});
-                     true ->
-                         hygienize_splice(Expr, {Vs, dict:new()})
-                 end,
-    Expr1.
-
-post_splice(?SPLICE_BLOCK(_Ln, Expr), {Vs, _}) ->
-    hygienize_splice(Expr, {Vs, dict:new()});
-post_splice(?QUOTE_BLOCK(_Ln, Expr), VInfo) ->
-    post_splice(Expr, VInfo);
-post_splice(Form, VInfo) ->
-    traverse(fun post_splice/2, VInfo, Form).
-
-hygienize_splice(?QUOTE_BLOCK(_Ln, Expr), VInfo) ->
-    {Expr1, _} = post_splice(Expr, VInfo),
-    {Expr1, VInfo};
-hygienize_splice(#var{name = Name} = Var, {Vs, Ms} = VInfo) ->
-    case dict:find(Name, Ms) of
-        {ok, Name1} ->
-            {Var#var{name = Name1}, VInfo};
-        error ->
-            Name1 = escape(Name, Vs),
-            Vs1 = gb_sets:add(Name1, Vs),
-            Ms1 = dict:store(Name, Name1, Ms),
-            {Var#var{name = Name1}, {Vs1, Ms1}}
-    end;
-hygienize_splice(?SPLICE_BLOCK(_Ln, Expr), {Vs, Ms}) ->
-    {Expr1, {Vs1, _}} = hygienize_splice(Expr, {Vs, dict:new()}),
-    {Expr1, {Vs1, Ms}};
-hygienize_splice(Form, VInfo) ->
-    traverse(fun hygienize_splice/2, VInfo, Form).
-
 
                 
 %%
@@ -590,6 +802,18 @@ meta_error(Line, Error, Arg) ->
 external_error(Line, Module, Error) ->
     throw({Line, Module, Error}).
 
+%%
+%% Dumping function
+%%
+dump_code(Forms, #info{options = Opts}) ->
+    case lists:member(dump_code, Opts) of
+        true ->
+            io:format(
+              "~s~n",
+              [erl_prettypr:format(erl_syntax:form_list(Forms))]);
+        false ->
+            ok
+    end.
 
 
 %%
@@ -634,7 +858,31 @@ format_error(splice_unknown_external_function) ->
     "Unknown remote function call in 'splice'";
 format_error({splice_unknown_function, {Name,Arity}}) ->
     format("Unknown local function '~s/~b' used in 'meta:splice/1'",
-           [Name,Arity]).
-    
+           [Name,Arity]);
+format_error({unknown_ref, Name}) ->
+    format("Reference to unbound variable: '~s'", [Name]);
+format_error(standalone_ref) ->
+    "Reference is valid only within meta:splice/1";
+format_error(ref_in_quote) ->
+    "Reference is valid only within meta:splice/1";
+format_error(standalone_verbatim) ->
+    "Verbatim is valid only within meta:quote/1";
+format_error(verbatim_in_quote) ->
+    "meta:verbatin/1 is not allowed within meta:quote/1";
+format_error(quote_in_verbatim) ->
+    "meta:quote/1 is not allowed within meta:verbatim/1".
+
+
+
+
+
+%%
+%% Utils
+%%    
 format(Format, Args) ->
     io_lib:format(Format, Args).
+
+make_atom(Base, Level, Index) ->
+    List = lists:flatten(format("~s_~B_~B", [Base, Level, Index])),
+    list_to_atom(List).
+    

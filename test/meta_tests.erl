@@ -27,17 +27,17 @@
 %% meta:quote tests
 %%
 q1() ->
-    [meta:quote(1),
-     meta:quote(1.1),
-     meta:quote(true),
-     meta:quote(atom),
-     meta:quote(<<"Bin">>),
-     meta:quote({1,{[2,3],true}})].
+    [?q(1),
+     ?q(1.1),
+     ?q(true),
+     ?q(atom),
+     ?q(<<"Bin">>),
+     ?q({1,{[2,3],true}})].
 
 q2() ->
-    [meta:quote(fun() -> 42 end),
-     meta:quote(fun q1/0),
-     meta:quote(fun(A) -> A + 1 end)].
+    [?q(fun() -> 42 end),
+     ?q(fun q1/0),
+     ?q(fun(A) -> A + 1 end)].
 
 quote_test_() ->
     [{"Basic type quotes",
@@ -45,28 +45,47 @@ quote_test_() ->
      {"Function type quotes",
       ?_assert(lists:all(fun is_valid_quote/1, q2()))}].
 
+v1() ->
+    [?v(erl_syntax:revert(erl_syntax:abstract(42))),
+     ?v(erl_syntax:revert(erl_syntax:abstract(atom)))].
+
+v2() ->
+    [?v(erl_syntax:revert(
+          erl_syntax:fun_expr(
+            [hd(erl_syntax:fun_expr_clauses(
+                  ?s(?q(fun(A, B) ->
+                                {A, B}
+                        end))))])))].
+
+verbatim_test_() ->
+    [{"Basic verbatim",
+      ?_assert(lists:all(fun is_valid_quote/1, v1()))},
+     {"Function type verbatims",
+      ?_assert(lists:all(fun is_valid_quote/1, v2()))}].
+
+
 splice_test_() ->
     [{"Basic type splices",
       ?_test(
-         [meta:splice(hd(q1())),
-          meta:splice(lists:nth(2, q1())),
-          meta:splice(lists:nth(3, q1())),
-          meta:splice(lists:nth(4, q1())),
-          meta:splice(lists:nth(5, q1())),
-          meta:splice(lists:last(q1()))])},
+         [?s(hd(q1())),
+          ?s(lists:nth(2, q1())),
+          ?s(lists:nth(3, q1())),
+          ?s(lists:nth(4, q1())),
+          ?s(lists:nth(5, q1())),
+          ?s(lists:last(q1()))])},
      {"Inline splice",
       [?_assertEqual(42,
-                     meta:splice(meta:quote(42))),
+                     ?s(?q(42))),
        ?_assertEqual(42,
-                     (meta:splice(meta:quote(fun(A) -> A end)))(42))]},
+                     (?s(?q(fun(A) -> A end)))(42))]},
      {"Function type slices",
       ?_test(
          begin
-             F1 = meta:splice(hd(q2())),
+             F1 = ?s(hd(q2())),
              ?assertEqual(42, F1()),
-             F2 = meta:splice(lists:nth(2, q2())),
+             F2 = ?s(lists:nth(2, q2())),
              ?assertEqual(q1(), F2()),
-             F3 = meta:splice(lists:nth(3, q2())),
+             F3 = ?s(lists:nth(3, q2())),
              ?assertEqual(3, F3(2))
          end)}].
        
@@ -75,19 +94,24 @@ quote_splice_test_() ->
       ?_test(
          begin
              A = ?q(1),
-             Q1 = ?q(?sv(A) + 2),
+             Q1 = ?q(?s(A) + 2),
              Q2 = ?q(1 + 2),
-             ?assertEqual(Q2, Q1)
+             ?assertEqual(Q2(gb_sets:new()), Q1(gb_sets:new()))
          end)},
      {"Anihilaation of quote(splice()) pairs",
-      [?_assertEqual(42, ?q(?sv(42))),
-       ?_assertEqual(42, ?s(?q(42))),
-       ?_assertEqual(?q(42), ?q(?sv(?q(42)))),
-       ?_assertEqual(42, ?sv(?q(?sv(?q(42))))),
+      [?_assertEqual(42, ?s(?q(42))),
+       ?_assertEqual(?e(?q(42)),
+                     ?e(?q(?s(?q(42))))),
+       ?_assertEqual(42, ?s(?q(?s(?q(42))))),
        {"local -meta function in quote",
-        ?_assertEqual(?q(42 + 1), ?q(meta_local(42)))},
+        ?_assertEqual((?q(42 + 1))(gb_sets:new()),
+                      (?q(meta_local(42)))(gb_sets:new()))},
        {"remote -meta function in quote",
-        ?_assertEqual(?q(42 + 42.0), ?q(meta_add(42, 42.0)))}]}].
+        ?_assertEqual((?q(42 + 42.0))(gb_sets:new()),
+                      (?q(meta_add(42, 42.0)))(gb_sets:new()))}]},
+     {"Verbatim tests",
+      [?_assertEqual(?e(?q(?s(?v(erl_syntax:revert(erl_syntax:abstract(42)))) + 1)),
+                     ?e(?q(42 + 1)))]}].
 
 %%
 %% Local function call in 'meta:splice'
@@ -112,11 +136,11 @@ recursive(0) ->
 recursive(N) ->
     A = N,
     B = id(N),
-    ?q({?s(erl_parse:abstract(A)), ?s(recursive(B-1))}).
+    ?q({?s(fun(V) -> {erl_parse:abstract(A), V} end), ?s(recursive(B-1))}).
 
 %% This one is auto-spliced via '-meta' attribute
 meta_local(QN) ->
-    ?q(?sv(QN) + 1).
+    ?q(?s(QN) + 1).
 
 %% -meta operator: meta-converts into fun call
 '=<'(QLeft, QRight) ->
@@ -175,40 +199,66 @@ p1(A) ->
     A + 1.
 
 unwind_fun_test() ->
-    %% QFunName = ?qv(p1),
-    %% QArg = ?qv(42),
-    %% N = 3,
-    %% QUnwinded = unwind(N, QFunName, QArg),
-    %% ?assertEqual("p1(p1(p1(42)))",
-    %%              erl_prettypr:format(QUnwinded)),
-    ?assertEqual(6, ?s(unwind(5, ?qv(p1), ?qv(1)))).
+    QFunName = ?q(p1),
+    QArg = ?q(42),
+    N = 3,
+    {QUnwinded,_} = (unwind(N, QFunName, QArg))(gb_sets:new()),
+    ?assertEqual("p1(p1(p1(42)))",
+                 erl_prettypr:format(QUnwinded)),
+    ?assertEqual(6, ?s(unwind(5, ?q(p1), ?q(1)))).
     
 
 %%
 %% Hygienic meta-variables  
 %%
-hygenic_splice(_G, L, 0) ->
+hygenic_splice(G, L, 0) ->
     begin
-        ?q({?sv(L)})
+        ?q(?s(G) + ?s(L))
     end;
-hygenic_splice(G, L, N) ->
+hygenic_splice(G, _L, N) ->
     ?q(begin
-           Var = ?s(G) + ?sv(L),
-           {Var, ?s(hygenic_splice(G, ?qv(Var), N-1))}
+           E = ?s(G),
+           ?s(hygenic_splice(G, ?r(E), N-1))
        end).
 
 meta_var_test() ->
     E = 1,
-    ?s(hygenic_splice(?qv(E), ?q(42), 2)).
-    
+    ?s(hygenic_splice(?r(E), ?q(42), 1)).
 
+%%
+%% "Long reference" example
+%%
+long_ref(A) ->
+    ?s(?q(fun(B) ->
+                  B + ?s(?r(A))
+          end)).
+
+long_ref_test() ->
+    ?assertEqual(7, (long_ref(3))(4)).
+
+%%
+%% extract test
+%%
+simple_extract() ->
+    Q = ?q(42),
+    ?q(begin
+           N = ?s(fun(QN) ->
+                          ?v(QN)
+                  end(?i(Q))),
+           N
+       end).
+
+simple_extract_test() ->
+     ?assertEqual(42, ?s(simple_extract())).
+    
 
 %%
 %% Utilities
 %%
 is_valid_quote(QExpr) ->
     try
-        erl_lint:exprs([QExpr], []),
+        {Q,_} = QExpr(gb_sets:new()),
+        erl_lint:exprs([Q], []),
         true
     catch error:_ ->
             false
