@@ -1,0 +1,5 @@
+
+
+- Check if multiple splixes withing the same function do not produce collisions in var names
+For example in 'parsers:mplus/2' - when '_Err2' is renamed to '_Err' there some 'unsafe' error when compiling some code which uses 'mplus' - need to be investigated
+- Some errors from `meta` are not diplayed as error (something wrong with `get_line`?) 
