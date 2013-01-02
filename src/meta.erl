@@ -624,7 +624,8 @@ eval_splice(Ln, Splice, #info{vars = Vs} = Info) ->
         error:{badarg, Arg} ->
             meta_error(Ln, splice_badarg, Arg);
         error:undef ->
-            meta_error(Ln, splice_unknown_external_function);
+            [{Mod, Fn, Args, _}|_] = erlang:get_stacktrace(),
+            meta_error(Ln, {splice_unknown_external_function, {Mod, Fn, length(Args)}});
         error:_ ->
             meta_error(Ln, invalid_splice)
     end.
@@ -856,6 +857,9 @@ format_error({splice_badarg, Arg}) ->
     format("'badarg' in 'meta:splice': ~p", [Arg]);
 format_error(splice_unknown_external_function) ->
     "Unknown remote function call in 'splice'";
+format_error({splice_unknown_external_function, {Mod, Fn, Arity}}) ->
+    format("Unknown function '~s:~s/~b' used in 'meta:splice/1'",
+           [Mod, Fn, Arity]);    
 format_error({splice_unknown_function, {Name,Arity}}) ->
     format("Unknown local function '~s/~b' used in 'meta:splice/1'",
            [Name,Arity]);
