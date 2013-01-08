@@ -3,14 +3,23 @@
 -export([reify_type/2,
          reify_attributes/2,
          reify/2,
-         error/2, error/3]).
+         error/2, error/3,
 
--export([parse_transform/2,
-         format_error/1]).
+         parse_transform/2,
+         format_error/1,
 
--export([hygienize_var/3]).
+         hygienize_var/3]).
 
 -include("../include/meta_syntax.hrl").
+
+%%%
+%%% Types
+%%%
+-type form() :: erl_parse:abstract_form().
+-type forms() :: form() | [form()].
+-type vars() :: gb_set().
+
+-type quote(Form) :: fun((vars()) -> Form).
 
 -record(info,
         {options = [],
@@ -21,6 +30,11 @@
          records = dict:new(),
          funs = dict:new(),
          vars = gb_sets:new()}).
+
+-opaque info() :: #info{}.
+
+-export_type([quote/1, info/0]).
+
 
 -define(REMOTE_CALL(Ln, Mod, Name, Args),
         #call{line = Ln,
@@ -51,21 +65,34 @@
 -define(REIFY_ALL(Ln), ?META_CALL(Ln, reify, [])).
 
 -record(q_info,
-        {info,
-         level,
+        {info :: info(),
+         level :: integer(),
          vars = dict:new(),
-         refs,
+         refs :: dict(),
          splices = []}).
 
 -record(s_info,
-        {info,
-         level,
-         refs,
+        {info :: info(),
+         level :: integer(),
+         refs :: dict(),
          splices = []}).
+
 
 %%%
 %%% API
 %%%
+-spec reify_type(TypeRef, Info) -> Def when
+      TypeRef :: Record | Type | Fun,
+      Record :: {record, RecordName},
+      Type :: {TypeName, TypeArgs},
+      TypeArgs :: [TypeRef],
+      Fun :: {'fun', FunName, Arity},
+      RecordName :: atom(),
+      TypeName :: atom(),
+      FunName :: atom(),
+      Arity :: integer(),
+      Info :: info(),
+      Def :: form().
 reify_type({record,_Name} = Record, #info{types = Ts} = Info) ->
     Key = {Record,0},
     case lookup(Key, Ts, none) of
@@ -77,7 +104,10 @@ reify_type({record,_Name} = Record, #info{types = Ts} = Info) ->
     end;    
 reify_type({'fun',Name,Arity} = Fun, #info{types = Ts}) ->
     fetch(Fun, Ts, {reify_unknown_function_spec, {Name, Arity}});
-reify_type({Name,Args}, #info{types = Ts}) ->
+reify_type({tuple, Args}, Info) ->
+    Args1 = [reify_type(A, Info) || A <- Args],
+    {tuple, Args1};
+reify_type({Name, Args}, #info{types = Ts}) ->
     Key = {Name,length(Args)},
     case lookup(Key, Ts, none) of
         none ->
@@ -91,7 +121,10 @@ reify_type({Name,Args}, #info{types = Ts}) ->
             Def
     end.
 
-
+-spec reify_attributes(AttrName, Info) -> Form when
+      AttrName :: atom(),
+      Info :: info(),
+      Form :: form().
 reify_attributes(Name, #info{attributes = As}) ->
     lookup(Name, As, []).
 
@@ -106,7 +139,11 @@ error(Module, Error, Arg) ->
     throw({external_error, Module, {Error, Arg}}).
 
 
-
+-spec hygienize_var(VarName, Vars, VarMaps) ->
+                           {VarName, Vars, VarMaps} when
+      VarName :: string(),
+      Vars :: gb_set(),
+      VarMaps :: dict().
 hygienize_var('_', Vars, Maps) ->
     {'_', Vars, Maps};
 hygienize_var(VarName, Vars, Maps) ->
@@ -128,22 +165,23 @@ hygienize_var(VarName, Vars, Maps) ->
             
     
 
+-spec parse_transform(Forms, Options) -> Forms when
+      Forms :: forms(),
+      Options :: [compile:option()].
 parse_transform(Forms, _Options) ->
     {Forms1, Info} = traverse(fun info/2, #info{}, Forms),
-    %%io:format("~p", [Info]),
     Funs = [K || {K,_V} <- dict:to_list(Info#info.funs)],
     {_, Info1} = safe_mapfoldl(fun process_fun/2, Info, Funs),
-    %%io:format("~p", [Info1]),
     Forms2 = lists:map(insert(Info1), Forms1),
-    %% io:format("~p", [Forms2]),
-    %% io:format("~s~n", [erl_prettypr:format(erl_syntax:form_list(Forms2))]),
     dump_code(Forms2, Info1),
     Forms2.
 
-
-%%
-%% meta:quote/1 handling
-%%
+-spec process_fun(Fun, Info) -> {Forms, Info} when
+      Fun :: {FunName, Arity},
+      FunName :: atom(),
+      Arity :: integer(),
+      Info :: info(),
+      Forms :: forms().  
 process_fun(Fun, #info{funs = Fs} = Info) ->
     {Def, State} = dict:fetch(Fun, Fs),
     if
@@ -203,7 +241,9 @@ quote_arg(_, ?SPLICE(_, Expr)) ->
 quote_arg(Ln, Arg) ->
     ?QUOTE(Ln, Arg).
 
-
+-spec meta(Forms, Info) -> {Forms, Info} when
+      Forms :: forms(),
+      Info :: info().
 meta(#function{} = Form, Info) ->
     Info1 = Info#info{vars = gb_sets:new()},
     traverse(fun meta/2, Info1, Form);
@@ -212,11 +252,7 @@ meta(#var{name = Name} = Form, #info{vars = Vs} = Info) ->
     traverse(fun meta/2, Info1, Form);
 
 meta(?QUOTE(_, Expr), Info) ->
-    QI = #q_info
-        {level = 1, info = Info,
-         refs = dict:from_list(
-                  [{V,0} || V <- gb_sets:to_list(Info#info.vars)])},
-    {Expr1, #q_info{info = Info1}} = process_quote(Expr, QI),
+    {Expr1, #q_info{info = Info1}} = process_quote(Expr, Info),
     {Expr1, Info1};
 
 meta(?VERBATIM(_, Expr), Info) ->
@@ -245,8 +281,8 @@ meta(?REIFY(Ln, {'fun', _, {function, Name, Arity}}),
     case dict:find(Key, Fs) of
         {ok, _} ->
             {Def, Info1} = process_fun(Key, Info),
-            {Ast, Info2} = term_to_ast(Def, Info1),
-            {erl_syntax:revert(Ast), Info2};
+            {Ast, #q_info{info = Info2}} = process_quote(Def, Info1),
+            {Ast, Info2};
         error ->
             meta_error(Ln, {reify_unknown_function, Key})
     end;
@@ -265,8 +301,8 @@ meta(?REIFYTYPE(Ln, {record, _, Name, []}),
             case dict:find(Name, Rs) of
                 {ok, {_,Fields}} ->
                     Def = {Rec,Fields,[]},
-                    {Ast, Info1} = term_to_ast(Def, Info),
-                    {erl_syntax:revert(Ast), Info1};
+                    {Ast, #q_info{info = Info1}} = process_quote(Def, Info),
+                    {Ast, Info1};
                 error ->
                     meta_error(Ln, {reify_unknown_record, Name})
             end;
@@ -289,11 +325,26 @@ meta(Form, Info) ->
     traverse(fun meta/2, Info, Form).
 
 
-process_quote(Quote, QI) ->
+-spec process_quote(Forms, Info) -> {AST, QInfo} when
+      Forms :: forms(),
+      Info :: QInfo | info(),
+      QInfo :: #q_info{},
+      AST :: forms().      
+process_quote(Quote, #info{} = Info) ->
+    QI = #q_info
+        {level = 1, info = Info,
+         refs = dict:from_list(
+                  [{V,0} || V <- gb_sets:to_list(Info#info.vars)])},
+    process_quote(Quote, QI);    
+process_quote(Quote, #q_info{} = QI) ->
     {Ast, QI1} = term_to_ast(Quote, QI),
     R = build_hygienizer(Ast, QI1),
     {R, QI1}.
 
+-spec term_to_ast(Forms, QInfo) -> {AST, QInfo} when
+      Forms :: forms(),
+      QInfo :: #q_info{},
+      AST :: erl_syntax:syntaxTree().
 term_to_ast(#var{name = Name} = Var, QI) ->
     Vs = QI#q_info.vars,
     Rs = QI#q_info.refs,
@@ -343,6 +394,7 @@ term_to_ast(F, QI) when is_float(F) ->
     {erl_syntax:float(F), QI};
 term_to_ast(A, QI) when is_atom(A) ->
     {erl_syntax:atom(A), QI}. 
+
 
 tuple_to_ast(T, QI) ->
     Ls = case tuple_to_list(T) of
@@ -415,11 +467,19 @@ hygienize_splices(Ss, Level, NI) ->
     lists:mapfoldl(Fun, NI, Ss).
     
 
+-spec process_splice(Forms, SInfo) -> {AST, SInfo} when
+      Forms :: forms(),
+      SInfo :: #s_info{},
+      AST :: erl_syntax:syntaxTree().
 process_splice(Expr, SI) ->
     {Ast, SI1} = ast_to_ast(Expr, SI),
     Ast1 = erl_syntax:revert(Ast),
     {Ast1, SI1}.
 
+-spec ast_to_ast(Forms, SInfo) -> {AST, SInfo} when
+      Forms :: forms(),
+      SInfo :: #s_info{},
+      AST :: erl_syntax:syntaxTree().
 ast_to_ast(?SPLICE(Ln, _), _) ->
     meta_error(Ln, nested_splice);
 ast_to_ast(?VERBATIM(_, Expr), SI) ->
@@ -535,8 +595,8 @@ lookup(Name, Dict, Default) ->
 fetch(Line, Name, Dict, Error, Info) ->
     case dict:find(Name, Dict) of
         {ok, Def} ->
-            {Ast, Info1} = term_to_ast(Def, Info),
-            {erl_syntax:revert(Ast), Info1};
+            {Ast, #q_info{info = Info1}} = process_quote(Def, Info),
+            {Ast, Info1};
         error ->
             meta_error(Line, Error)
     end.
@@ -544,8 +604,8 @@ fetch(Line, Name, Dict, Error, Info) ->
 lookup(Name, Dict, Default, Info) ->
     case dict:find(Name, Dict) of
         {ok, Def} ->
-            {Ast, Info1} = term_to_ast(Def, Info),
-            {erl_syntax:revert(Ast), Info1};
+            {Ast, #q_info{info = Info1}} =  process_quote(Def, Info),
+            {Ast, Info1};
         error ->
             Default
     end.
@@ -554,6 +614,9 @@ lookup(Name, Dict, Default, Info) ->
 %%
 %% Various info gathering for subsequent use
 %%
+-spec info(Forms, Info) -> {Forms, Info} when
+      Forms :: forms(),
+      Info :: info().
 info(#attribute{name = meta, arg = Meta} = Form,
      #info{meta = Ms} = Info) ->
     Info1 = Info#info{meta = Ms ++ Meta},
@@ -613,6 +676,8 @@ eval_splice(Ln, Splice, #info{vars = Vs} = Info) ->
         erl_lint:exprs([Expr1], []),
         {Expr1, Info}
     catch
+        throw:{get_line, MetaError} ->
+            meta_error(Ln, MetaError);
         throw:{external_error, Module, Error} ->
             external_error(Ln, Module, Error);
         error:{unbound, Var} ->
@@ -744,8 +809,8 @@ escape_iter(N, I, CsNs) ->
 %% Type reification functions
 %%
 is_standard({Type,0}) ->
-    Ts = [integer, float, binary, boolean, atom, tuple,
-          byte, char, number, string, any],
+    Ts = [integer, float, binary, boolean, atom,
+          byte, char, number, string, any, tuple],
     lists:member(Type, Ts);
 is_standard(_) ->
     false.
@@ -792,7 +857,7 @@ safe_mapfoldl(Fun, Info, Fns) ->
     lists:mapfoldl(Do, Info, Fns).
 
 %%
-%% Compile-time errorr
+%% Compile-time error
 %%
 meta_error(Line, Error) ->
     throw({Line, Error}).
@@ -820,6 +885,7 @@ dump_code(Forms, #info{options = Opts}) ->
 %%
 %% Formats error messages for compiler 
 %%
+-spec format_error(any()) -> iolist().
 format_error(nested_quote) ->
     "meta:quote/1 is not allowed within another meta:quote/1";
 format_error(nested_splice) ->
@@ -835,9 +901,8 @@ format_error({reify_unknown_function, {Name, Arity}}) ->
            [Name, Arity]);
 format_error({reify_unknown_record, Name}) ->
     format("attempt to reify unknown record '#~s{}'", [Name]);
-format_error({reify_unknown_type, {Name,Args}}) ->
-    Args1 = string:join([format("~p", A) || A <- Args], ","),
-    format("attempt to reify unknown type '~s(~s)'", [Name, Args1]);
+format_error({reify_unknown_type, Type}) ->
+    format("attempt to reify unknown type '~s'", [type_to_list(Type)]);
 format_error({reify_unknown_record_type, Name}) ->
     format("attempt to reify unknown record type '#~s{}'", [Name]);
 format_error({reify_unknown_function_spec, {Name, Arity}}) ->
@@ -876,6 +941,9 @@ format_error(verbatim_in_quote) ->
 format_error(quote_in_verbatim) ->
     "meta:quote/1 is not allowed within meta:verbatim/1".
 
+type_to_list({Name, Args}) ->
+    Args1 = string:join([type_to_list(T) || T <- Args], ","),
+    lists:flatten(format("~s(~s)", [Name, Args1])).
 
 
 
