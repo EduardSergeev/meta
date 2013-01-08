@@ -1,3 +1,14 @@
+%%%-------------------------------------------------------------------
+%%% @author Eduard Sergeev <eduard.sergeev@gmail.com>
+%%% @copyright (C) 2013, Eduard Sergeev
+%%% @doc
+%%% Simple meta-programming for erlang
+%%%
+%%% Quasi-quotation-based, hygienic macros expanded in compile-time.
+%%% Based on parse_transform  
+%%% @end
+%%% Created : Jun 2012 by <eduard.sergeev@gmail.com>
+%%%-------------------------------------------------------------------
 -module(meta).
 
 -export([reify_type/2,
