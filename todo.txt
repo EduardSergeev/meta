@@ -1,4 +1,3 @@
 
-- Expand `-meta()` dump options to print spliced function only
-   and possible to nicely print quotes
+
 - Add meta "stub" function (quote/1, splice/1, etc) which just throw exceptions and write documentations for them

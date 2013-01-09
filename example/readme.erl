@@ -4,7 +4,7 @@
 
 -compile(export_all).
 
-%% -meta_opts(dump_code).
+%% -meta_opts([dump_splices]).
 
 get_quote() ->
     ?q(1 + 2).

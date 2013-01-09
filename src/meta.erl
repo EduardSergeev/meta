@@ -32,14 +32,25 @@
 
 -type quote(Form) :: fun((vars()) -> Form).
 
+-export_type([meta_options/0]).
+-type meta_options() :: [meta_option()] | meta_option().
+-type meta_option() :: dump_code() | dump_splices().
+-type dump_code() :: dump_code.
+%% Prints module code after meta-processing
+
+-type dump_splices() :: dump_splices.
+%% Prints function code after meta-processing for all function which were affected by it
+
 -record(info,
-        {options = [],
+        {current_fun :: {atom(), integer()},
+         options = [],
          meta = [],
          attributes = dict:new(),
          imports = dict:new(),
          types = dict:new(),
          records = dict:new(),
          funs = dict:new(),
+         splice_funs = gb_sets:new(),
          vars = gb_sets:new()}).
 
 -opaque info() :: #info{}.
@@ -185,6 +196,7 @@ parse_transform(Forms, _Options) ->
     {_, Info1} = safe_mapfoldl(fun process_fun/2, Info, Funs),
     Forms2 = lists:map(insert(Info1), Forms1),
     dump_code(Forms2, Info1),
+    dump_splices(Forms2, Info1),
     Forms2.
 
 -spec process_fun(Fun, Info) -> {Forms, Info} when
@@ -255,8 +267,10 @@ quote_arg(Ln, Arg) ->
 -spec meta(Forms, Info) -> {Forms, Info} when
       Forms :: forms(),
       Info :: info().
-meta(#function{} = Form, Info) ->
-    Info1 = Info#info{vars = gb_sets:new()},
+meta(#function{name = Name, arity = Arity} = Form, Info) ->
+    Info1 = Info#info{
+              current_fun = {Name, Arity},
+              vars = gb_sets:new()},
     traverse(fun meta/2, Info1, Form);
 meta(#var{name = Name} = Form, #info{vars = Vs} = Info) ->
     Info1 = Info#info{vars = gb_sets:add(Name, Vs)},
@@ -279,10 +293,13 @@ meta(?REF(Ln, _), _) ->
     meta_error(Ln, standalone_ref);
 
 meta(?SPLICE(Ln, Splice), Info) ->
+    CFun = Info#info.current_fun,
+    SFuns = Info#info.splice_funs,
+    Info1 = Info#info{splice_funs = gb_sets:add(CFun, SFuns)},
     SI = #s_info
-        {level = 0, info = Info,
+        {level = 0, info = Info1,
          refs = dict:from_list(
-                  [{V,0} || V <- gb_sets:to_list(Info#info.vars)])},
+                  [{V,0} || V <- gb_sets:to_list(Info1#info.vars)])},
     {Splice1, SI1} = process_splice(Splice, SI),
     eval_splice(Ln, Splice1, SI1#s_info.info);   
 
@@ -888,6 +905,21 @@ dump_code(Forms, #info{options = Opts}) ->
             io:format(
               "~s~n",
               [erl_prettypr:format(erl_syntax:form_list(Forms))]);
+        false ->
+            ok
+    end.
+
+dump_splices(Forms, #info{options = Opts} = Info) ->
+    case lists:member(dump_splices, Opts) of
+        true ->
+            SFuns = Info#info.splice_funs,
+            Funs =
+                [ F ||
+                    #function{name = N, arity = A} = F <- Forms, 
+                    gb_sets:is_member({N,A}, SFuns) ],
+            io:format(
+              "~s~n",
+              [erl_prettypr:format(erl_syntax:form_list(Funs))]);
         false ->
             ok
     end.

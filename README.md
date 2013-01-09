@@ -32,7 +32,7 @@ The body of the above function is produced in compile type by calling local func
     use_quote() ->
         1 + 2 + 39.
 
-Note: it is possible to check the result of splice using attribute `-meta_opts(dump_code)`. Whenever this attribute is added to module code the entire module code (after macro-expansion) will be printed during the compilation (warning:the otput can be quite large).
+Note: it is possible to check the result of splice using attribute `-meta_opts(dump_splices)`. Whenever this attribute is present in code, the definitions of all function which were affected by splices (after splice-expansion) will be printed during the compilation (warning:the otput can be quite large).
 
 When called `use_quote/0` returns `42` which is understandable but not very exiting. Of course the above type of quote/splice is useless - the same (well, almost) result could be achieved with a normal function call without any meta-programming. However this example illustrates a crusial difference of meta-function: the function `get_quote/0` is evaluated in compile-time only and whatever Erlang code is produced it then becomes a part of the resulting code and can be executed in run-time. The logic of such meta-function can be quite complex and it can produce the code which, for instance, otherwise would have to be written by hand.
 Still it is not very useful example, lets do something more meta-like and to do that we should note that quotes and splices can be _nested_:
