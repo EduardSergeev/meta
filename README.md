@@ -1,5 +1,6 @@
 ﻿Meta
 =======
+[![Build Status](https://travis-ci.org/EduardSergeev/meta.png?branch=dev)](https://travis-ci.org/EduardSergeev/meta)
 
 Overview
 --------
