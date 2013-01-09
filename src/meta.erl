@@ -19,7 +19,10 @@
          parse_transform/2,
          format_error/1,
 
-         hygienize_var/3]).
+         hygienize_var/3,
+
+         %% meta-function stubs
+         quote/1, splice/1, ref/1, verbatim/1, extract/1]).
 
 -include("../include/meta_syntax.hrl").
 
@@ -32,14 +35,25 @@
 
 -type quote(Form) :: fun((vars()) -> Form).
 
+-export_type([meta_options/0]).
+-type meta_options() :: [meta_option()] | meta_option().
+-type meta_option() :: dump_code() | dump_splices().
+-type dump_code() :: dump_code.
+%% Prints module code after meta-processing
+
+-type dump_splices() :: dump_splices.
+%% Prints function code after meta-processing for all function which were affected by it
+
 -record(info,
-        {options = [],
+        {current_fun :: {atom(), integer()},
+         options = [],
          meta = [],
          attributes = dict:new(),
          imports = dict:new(),
          types = dict:new(),
          records = dict:new(),
          funs = dict:new(),
+         splice_funs = gb_sets:new(),
          vars = gb_sets:new()}).
 
 -opaque info() :: #info{}.
@@ -88,6 +102,104 @@
          refs :: dict(),
          splices = []}).
 
+%%%
+%%% Meta API
+%%% These function should not be called directly (they will generate errors anyway)
+%%% Currently they are added for documentation purposes only
+%%%
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Meta-function which marks the scope of quotation.
+%%
+%% Any valid Erlang expression which syntaxicaly can be passed to function
+%% can be `quoted` using `meta:quote()'
+%% The "argument" must be a single expression only.
+%% Wrap several the expression into `begin .. end' block is necessary
+%%
+%% Note: It is more convenient (concise) to use `?q/1' macro instead.
+%% @end
+%%--------------------------------------------------------------------
+-spec quote(Expr) -> quote(Expr) when Expr :: any().
+quote(_Expr) ->
+    meta_error(get_line, {meta_function, quote}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Meta-function which is marks the place of the splice of its "argument"
+%%
+%% Upon meta-expansion this function is replaced with hygienic splice
+%% of a given quote.
+%% The argument must be a signle expression which evaluates to {@type quote()}.
+%% This expression can use local or remote functions
+%% (given that the module containing remote function is already compiled),
+%% but it must not reference any variables in scope of the current function.
+%% Wrap several the expression into `begin .. end' block is necessary.
+%%
+%% Note: It is more convenient (concise) to use `?s/1' macro instead.
+%% @end
+%%--------------------------------------------------------------------
+-spec splice(quote(Expr)) -> Expr when Expr :: any().
+splice(_QExpr) ->
+    meta_error(get_line, {meta_function, splice}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Meta-function which marks a quote-reference to a variable in scope
+%%
+%% This meta-function similarily`?q/1' also creates {@type quote()},
+%% but the resulting quote is a reference to a given variable,
+%% meaning that when this quote is spliced the name of the resulting variable
+%% will be identical to the name of the referenced variable
+%% (i.e. both variables will be hygienised to the same name if necessary)
+%% Only a variable which already present in the current scope
+%% must be used as an argument to this function.
+%%
+%% Note: It is more convenient (concise) to use `?r/1' macro instead.
+%% @end
+%%--------------------------------------------------------------------
+-spec ref(Var) -> quote(Var) when Var :: any().
+ref(_Expr) ->
+    meta_error(get_line, {meta_function, ref}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Meta-function which marks the conversion of a bare Erlang AST into quote
+%%
+%% This meta-function similarily`?q/1' also creates {@type quote()},
+%% but it produces it via conversion of a valid {@type erl_syntax:syntaxTree()}
+%% If {@type quote()} can be viewed as a monad,
+%% `?v' is `return/0' function for that monad
+%%
+%% Note: It is more convenient (concise) to use `?v/1' macro instead.
+%% @end
+%%--------------------------------------------------------------------
+-spec verbatim(form()) -> quote(Expr) when Expr :: any().
+verbatim(_Expr) ->
+    meta_error(get_line, {meta_function, verbatim}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Meta-function which marks conversion of AST into quote 
+%%
+%% This meta-function "extract" {@type erl_syntax:syntaxTree()}
+%% from a given {@type quote()},
+%% only to be subsequently wrapped back into {@type quote()} with `?v'.
+%% This can be used to add transformation code which works on Erlang AST
+%% which is handy for advanced scenarios.
+%%
+%% The important property of `?v(?e())' transformation that the hygienic
+%% nature of `?s(?q())' is preserved regardless of the transformations.
+%% If {@type quote()} can be viewed as a monad,
+%% `?v(?e(..))' pair is `bind/2' function for that monad 
+%% 
+%% Note: It is more convenient (concise) to use `?e/1' macro instead.
+%% @end
+%%--------------------------------------------------------------------
+-spec extract(quote(Expr)) -> form() when Expr :: any().
+extract(_Expr) ->
+    meta_error(get_line, {meta_function, extract}).
+    
 
 %%%
 %%% API
@@ -185,6 +297,7 @@ parse_transform(Forms, _Options) ->
     {_, Info1} = safe_mapfoldl(fun process_fun/2, Info, Funs),
     Forms2 = lists:map(insert(Info1), Forms1),
     dump_code(Forms2, Info1),
+    dump_splices(Forms2, Info1),
     Forms2.
 
 -spec process_fun(Fun, Info) -> {Forms, Info} when
@@ -255,8 +368,10 @@ quote_arg(Ln, Arg) ->
 -spec meta(Forms, Info) -> {Forms, Info} when
       Forms :: forms(),
       Info :: info().
-meta(#function{} = Form, Info) ->
-    Info1 = Info#info{vars = gb_sets:new()},
+meta(#function{name = Name, arity = Arity} = Form, Info) ->
+    Info1 = Info#info{
+              current_fun = {Name, Arity},
+              vars = gb_sets:new()},
     traverse(fun meta/2, Info1, Form);
 meta(#var{name = Name} = Form, #info{vars = Vs} = Info) ->
     Info1 = Info#info{vars = gb_sets:add(Name, Vs)},
@@ -279,10 +394,13 @@ meta(?REF(Ln, _), _) ->
     meta_error(Ln, standalone_ref);
 
 meta(?SPLICE(Ln, Splice), Info) ->
+    CFun = Info#info.current_fun,
+    SFuns = Info#info.splice_funs,
+    Info1 = Info#info{splice_funs = gb_sets:add(CFun, SFuns)},
     SI = #s_info
-        {level = 0, info = Info,
+        {level = 0, info = Info1,
          refs = dict:from_list(
-                  [{V,0} || V <- gb_sets:to_list(Info#info.vars)])},
+                  [{V,0} || V <- gb_sets:to_list(Info1#info.vars)])},
     {Splice1, SI1} = process_splice(Splice, SI),
     eval_splice(Ln, Splice1, SI1#s_info.info);   
 
@@ -892,6 +1010,21 @@ dump_code(Forms, #info{options = Opts}) ->
             ok
     end.
 
+dump_splices(Forms, #info{options = Opts} = Info) ->
+    case lists:member(dump_splices, Opts) of
+        true ->
+            SFuns = Info#info.splice_funs,
+            Funs =
+                [ F ||
+                    #function{name = N, arity = A} = F <- Forms, 
+                    gb_sets:is_member({N,A}, SFuns) ],
+            io:format(
+              "~s~n",
+              [erl_prettypr:format(erl_syntax:form_list(Funs))]);
+        false ->
+            ok
+    end.
+
 
 %%
 %% Formats error messages for compiler 
@@ -950,7 +1083,11 @@ format_error(standalone_verbatim) ->
 format_error(verbatim_in_quote) ->
     "meta:verbatin/1 is not allowed within meta:quote/1";
 format_error(quote_in_verbatim) ->
-    "meta:quote/1 is not allowed within meta:verbatim/1".
+    "meta:quote/1 is not allowed within meta:verbatim/1";
+format_error({meta_function, Fun}) ->
+    format(
+      "Function '~s/0' is a meta-function which should not be called directly",
+      [Fun]).
 
 type_to_list({Name, Args}) ->
     Args1 = string:join([type_to_list(T) || T <- Args], ","),

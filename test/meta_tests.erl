@@ -57,11 +57,22 @@ v2() ->
                                 {A, B}
                         end))))])))].
 
+verbatim_clash() ->
+    AVar = erl_syntax:revert(erl_syntax:variable('A')),
+    QVar = ?v(AVar),
+    ?q(begin
+           A = 41,
+           ?s(QVar) + 1
+       end).
+
 verbatim_test_() ->
     [{"Basic verbatim",
       ?_assert(lists:all(fun is_valid_quote/1, v1()))},
      {"Function type verbatims",
-      ?_assert(lists:all(fun is_valid_quote/1, v2()))}].
+      ?_assert(lists:all(fun is_valid_quote/1, v2()))},
+     {"Non-hygienic verbatim splice",
+      ?_assertMatch(42, ?s(verbatim_clash()))}].
+    
 
 
 splice_test_() ->
@@ -248,8 +259,47 @@ simple_extract() ->
            N
        end).
 
-simple_extract_test() ->
-     ?assertEqual(42, ?s(simple_extract())).
+another_extract() ->
+    Q = ?q(43),
+    ?q(begin
+           N = ?s(begin
+                      QN = ?i(Q),
+                      ?v(QN)
+                  end),
+           N
+       end).
+
+complex_extract() ->
+    Q = ?q(42),
+    ?q(?s(begin
+              N = ?i(Q),
+              Ns = erl_syntax:list([N,N,N]),
+              L = erl_syntax:revert(Ns),
+              ?v(L)
+          end)).
+
+hygienic_extract() ->
+    Q1 = ?q(begin
+               A = 21,
+               _B = A * 2
+           end),
+    Q2 = ?q(begin
+               A = 40,
+               _B = A + 2
+           end),
+    ?q(?s(begin
+              E1 = ?i(Q1),
+              E2 = ?i(Q2),
+              B = erl_syntax:block_expr([E1,E2]),
+              Ast = erl_syntax:revert(B),
+              ?v(Ast)
+          end)).
+
+simple_extract_test_() ->
+     [?_assertEqual(42, ?s(simple_extract())),
+      ?_assertEqual(43, ?s(another_extract())),
+      ?_assertEqual([42,42,42], ?s(complex_extract())),
+      ?_assertEqual(42, ?s(hygienic_extract()))].
     
 
 %%
