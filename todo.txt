@@ -1,3 +1,4 @@
 
 
-- Add meta "stub" function (quote/1, splice/1, etc) which just throw exceptions and write documentations for them
+- Investigate Dialyzer's "no local return" warnings and get rid of them if possible
+  These relates to newly added "documentation only" meta-functions

@@ -19,7 +19,10 @@
          parse_transform/2,
          format_error/1,
 
-         hygienize_var/3]).
+         hygienize_var/3,
+
+         %% meta-function stubs
+         quote/1, splice/1, ref/1, verbatim/1, extract/1]).
 
 -include("../include/meta_syntax.hrl").
 
@@ -99,6 +102,104 @@
          refs :: dict(),
          splices = []}).
 
+%%%
+%%% Meta API
+%%% These function should not be called directly (they will generate errors anyway)
+%%% Currently they are added for documentation purposes only
+%%%
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Meta-function which marks the scope of quotation.
+%%
+%% Any valid Erlang expression which syntaxicaly can be passed to function
+%% can be `quoted` using `meta:quote()'
+%% The "argument" must be a single expression only.
+%% Wrap several the expression into `begin .. end' block is necessary
+%%
+%% Note: It is more convenient (concise) to use `?q/1' macro instead.
+%% @end
+%%--------------------------------------------------------------------
+-spec quote(Expr) -> quote(Expr) when Expr :: any().
+quote(_Expr) ->
+    meta_error(get_line, {meta_function, quote}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Meta-function which is marks the place of the splice of its "argument"
+%%
+%% Upon meta-expansion this function is replaced with hygienic splice
+%% of a given quote.
+%% The argument must be a signle expression which evaluates to {@type quote()}.
+%% This expression can use local or remote functions
+%% (given that the module containing remote function is already compiled),
+%% but it must not reference any variables in scope of the current function.
+%% Wrap several the expression into `begin .. end' block is necessary.
+%%
+%% Note: It is more convenient (concise) to use `?s/1' macro instead.
+%% @end
+%%--------------------------------------------------------------------
+-spec splice(quote(Expr)) -> Expr when Expr :: any().
+splice(_QExpr) ->
+    meta_error(get_line, {meta_function, splice}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Meta-function which marks a quote-reference to a variable in scope
+%%
+%% This meta-function similarily`?q/1' also creates {@type quote()},
+%% but the resulting quote is a reference to a given variable,
+%% meaning that when this quote is spliced the name of the resulting variable
+%% will be identical to the name of the referenced variable
+%% (i.e. both variables will be hygienised to the same name if necessary)
+%% Only a variable which already present in the current scope
+%% must be used as an argument to this function.
+%%
+%% Note: It is more convenient (concise) to use `?r/1' macro instead.
+%% @end
+%%--------------------------------------------------------------------
+-spec ref(Var) -> quote(Var) when Var :: any().
+ref(_Expr) ->
+    meta_error(get_line, {meta_function, ref}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Meta-function which marks the conversion of a bare Erlang AST into quote
+%%
+%% This meta-function similarily`?q/1' also creates {@type quote()},
+%% but it produces it via conversion of a valid {@type erl_syntax:syntaxTree()}
+%% If {@type quote()} can be viewed as a monad,
+%% `?v' is `return/0' function for that monad
+%%
+%% Note: It is more convenient (concise) to use `?v/1' macro instead.
+%% @end
+%%--------------------------------------------------------------------
+-spec verbatim(form()) -> quote(Expr) when Expr :: any().
+verbatim(_Expr) ->
+    meta_error(get_line, {meta_function, verbatim}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Meta-function which marks conversion of AST into quote 
+%%
+%% This meta-function "extract" {@type erl_syntax:syntaxTree()}
+%% from a given {@type quote()},
+%% only to be subsequently wrapped back into {@type quote()} with `?v'.
+%% This can be used to add transformation code which works on Erlang AST
+%% which is handy for advanced scenarios.
+%%
+%% The important property of `?v(?e())' transformation that the hygienic
+%% nature of `?s(?q())' is preserved regardless of the transformations.
+%% If {@type quote()} can be viewed as a monad,
+%% `?v(?e(..))' pair is `bind/2' function for that monad 
+%% 
+%% Note: It is more convenient (concise) to use `?e/1' macro instead.
+%% @end
+%%--------------------------------------------------------------------
+-spec extract(quote(Expr)) -> form() when Expr :: any().
+extract(_Expr) ->
+    meta_error(get_line, {meta_function, extract}).
+    
 
 %%%
 %%% API
@@ -982,7 +1083,11 @@ format_error(standalone_verbatim) ->
 format_error(verbatim_in_quote) ->
     "meta:verbatin/1 is not allowed within meta:quote/1";
 format_error(quote_in_verbatim) ->
-    "meta:quote/1 is not allowed within meta:verbatim/1".
+    "meta:quote/1 is not allowed within meta:verbatim/1";
+format_error({meta_function, Fun}) ->
+    format(
+      "Function '~s/0' is a meta-function which should not be called directly",
+      [Fun]).
 
 type_to_list({Name, Args}) ->
     Args1 = string:join([type_to_list(T) || T <- Args], ","),
