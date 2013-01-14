@@ -23,7 +23,8 @@
          hygienize_var/3,
 
          %% meta-function stubs
-         quote/1, splice/1, ref/1, verbatim/1, extract/1]).
+         quote/1, splice/1, ref/1, verbatim/1,
+         extract/1, reify/0]).
 
 -include("../include/meta_syntax.hrl").
 
@@ -58,6 +59,8 @@
          vars = gb_sets:new()}).
 
 -opaque info() :: #info{}.
+%% Structure which contains all `meta' insformation
+%% for the currently meta-expanding module
 
 -export_type([quote/1, info/0]).
 
@@ -201,6 +204,20 @@ verbatim(_Expr) ->
 extract(_Expr) ->
     meta_error(get_line, {meta_function, extract}).
     
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Meta-function which produces `info()' upon meta-expansion
+%%
+%% This meta-function is converted into instance of {@type info()} type
+%% for the currently processing module
+%% which can be used as an argument for other functions in `meta'
+%% requiring {@type info()}
+%% @end
+%%--------------------------------------------------------------------
+-spec reify() -> info().
+reify() ->
+    meta_error(get_line, {meta_function, reify}).    
 
 %%%
 %%% API
