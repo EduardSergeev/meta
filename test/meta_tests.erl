@@ -302,6 +302,19 @@ simple_extract_test_() ->
       ?_assertEqual(42, ?s(hygienic_extract()))].
     
 
+local_add_qfun(A, B) ->
+    ?q(?s(?v(A)) + ?s(?v(B))).
+
+local_apply_test() ->
+    Res = ?s(remote:callback_call(
+               local_add_qfun,
+               [?e(?q(40)), ?e(?q(2))],
+               meta:reify())),
+    ?assertEqual(42, Res).
+    
+                     
+
+
 %%
 %% Utilities
 %%

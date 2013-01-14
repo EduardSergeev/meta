@@ -15,6 +15,7 @@
          reify_attributes/2,
          reify/2,
          error/2, error/3,
+         local_apply/3,
 
          parse_transform/2,
          format_error/1,
@@ -260,6 +261,40 @@ error(Module, Error) ->
 
 error(Module, Error, Arg) ->
     throw({external_error, Module, {Error, Arg}}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Local meta-function application callable from external module
+%%
+%% This function can be used to call a local
+%% to the currently meta-expanding module function from external module
+%% in splice.
+%% Local function calls are normally handled by `?s/1' evaluation mechanism,
+%% but should such function be called from some external module
+%% the mechanism will fail since the "local" module is yet to be fully compiled
+%% at this stage. However this helper function can be used for such call
+%% if the {@type info()} structure from the "local" module being expanded
+%% is availabe in the "external" module.
+%%
+%% Note: This is "advanced" feature, for most cases `?s/1' evaluation
+%% should be enough.
+%%
+%% Note2: Not all types of arguments can be passed to `Args' -
+%% the list is limited to types which can be handles by {@link erl_syntax:abstract/1},
+%% which means that quotes (`?q/1') cannot be passed
+%% @end
+%%--------------------------------------------------------------------
+-spec local_apply(FunName :: atom(), Args :: [any()], Info :: info()) ->
+                         FunResult :: any().
+local_apply(FunName, Args, Info) ->
+    QFun = erl_syntax:atom(FunName),
+    QArgs = [ erl_syntax:abstract(A) || A <- Args ],
+    App = erl_syntax:application(none, QFun, QArgs),
+    Expr = erl_syntax:revert(App),
+    Bs = erl_eval:new_bindings(),
+    Local = {eval, local_handler(0, Info)},
+    {value, Val, _} = erl_eval:expr(Expr, Bs, Local),
+    Val.
 
 
 -spec hygienize_var(VarName, Vars, VarMaps) ->
