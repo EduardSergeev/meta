@@ -126,7 +126,7 @@
 %%--------------------------------------------------------------------
 -spec quote(Expr) -> quote(Expr) when Expr :: any().
 quote(_Expr) ->
-    meta_error(get_line, {meta_function, quote}).
+    meta_error(get_line, {meta_function, {quote,1}}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -145,7 +145,7 @@ quote(_Expr) ->
 %%--------------------------------------------------------------------
 -spec splice(quote(Expr)) -> Expr when Expr :: any().
 splice(_QExpr) ->
-    meta_error(get_line, {meta_function, splice}).
+    meta_error(get_line, {meta_function, {splice,1}}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -164,7 +164,7 @@ splice(_QExpr) ->
 %%--------------------------------------------------------------------
 -spec ref(Var) -> quote(Var) when Var :: any().
 ref(_Expr) ->
-    meta_error(get_line, {meta_function, ref}).
+    meta_error(get_line, {meta_function, {ref,1}}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -180,7 +180,7 @@ ref(_Expr) ->
 %%--------------------------------------------------------------------
 -spec verbatim(form()) -> quote(Expr) when Expr :: any().
 verbatim(_Expr) ->
-    meta_error(get_line, {meta_function, verbatim}).
+    meta_error(get_line, {meta_function, {verbatim,1}}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -202,7 +202,7 @@ verbatim(_Expr) ->
 %%--------------------------------------------------------------------
 -spec extract(quote(Expr)) -> form() when Expr :: any().
 extract(_Expr) ->
-    meta_error(get_line, {meta_function, extract}).
+    meta_error(get_line, {meta_function, {extract,1}}).
     
 
 %%--------------------------------------------------------------------
@@ -217,7 +217,7 @@ extract(_Expr) ->
 %%--------------------------------------------------------------------
 -spec reify() -> info().
 reify() ->
-    meta_error(get_line, {meta_function, reify}).    
+    meta_error(get_line, {meta_function, {reify,0}}).    
 
 %%%
 %%% API
@@ -1138,10 +1138,10 @@ format_error(verbatim_in_quote) ->
     "meta:verbatin/1 is not allowed within meta:quote/1";
 format_error(quote_in_verbatim) ->
     "meta:quote/1 is not allowed within meta:verbatim/1";
-format_error({meta_function, Fun}) ->
+format_error({meta_function, {Fun,Arity}}) ->
     format(
-      "Function '~s/0' is a meta-function which should not be called directly",
-      [Fun]).
+      "Function '~s/~b' is a meta-function which should not be called directly",
+      [Fun, Arity]).
 
 type_to_list({Name, Args}) ->
     Args1 = string:join([type_to_list(T) || T <- Args], ","),
