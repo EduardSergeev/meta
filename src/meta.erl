@@ -848,15 +848,15 @@ eval_splice(Ln, Splice, #info{vars = Vs} = Info) ->
             meta_error(Ln, splice_external_var, Var);
         error:{badarity, _} ->
             meta_error(Ln, splice_badarity);
-        error:{badfun, _} ->
-            meta_error(Ln, splice_badfun);
+        error:{badfun, BadFun} ->
+            meta_error(Ln, {splice_badfun, BadFun});
         error:{badarg, Arg} ->
             meta_error(Ln, splice_badarg, Arg);
         error:undef ->
             [{Mod, Fn, Args, _}|_] = erlang:get_stacktrace(),
             meta_error(Ln, {splice_unknown_external_function, {Mod, Fn, length(Args)}});
-        error:_ ->
-            meta_error(Ln, invalid_splice)
+        error:Err ->
+            meta_error(Ln, {invalid_splice, Err})
     end.
 
 local_handler(Ln, Info) ->
@@ -1089,14 +1089,16 @@ format_error({reify_unknown_function_spec, {Name, Arity}}) ->
            [Name, Arity]);
 format_error({reify_unknown_attribute, Name}) ->
     format("attempt to reify unknown attribute '~s'", [Name]);
-format_error(invalid_splice) ->
-    "invalid expression in meta:splice/1";
+format_error({invalid_splice, Err}) ->
+    format(
+      "Invalid expression in 'meta:splice/1' resulted in error: ~p",
+      [Err]);
 format_error({splice_external_var, Var}) ->
     format("Variable '~s' is outside of scope of meta:splice/1", [Var]);
 format_error(splice_badarity) ->
     "'badarity' call in 'meta:splice'";
-format_error(splice_badfun) ->
-    "'badfun' call in 'meta:splice'";
+format_error({splice_badfun, BadFun}) ->
+    format("'badfun' call in 'meta:splice': ~p", [BadFun]);
 format_error({splice_badarg, Arg}) ->
     format("'badarg' in 'meta:splice': ~p", [Arg]);
 format_error(splice_unknown_external_function) ->
