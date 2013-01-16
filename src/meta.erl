@@ -871,7 +871,9 @@ eval_splice(Ln, Splice, #info{vars = Vs} = Info) ->
             meta_error(Ln, splice_badarg, Arg);
         error:undef ->
             [{Mod, Fn, Args, _}|_] = erlang:get_stacktrace(),
-            meta_error(Ln, {splice_unknown_external_function, {Mod, Fn, length(Args)}});
+            Arity = if is_list(Args) -> length(Args);
+                       is_integer(Args) -> Args end,
+            meta_error(Ln, {splice_unknown_external_function, {Mod, Fn, Arity}});
         error:Err ->
             meta_error(Ln, {invalid_splice, Err})
     end.
