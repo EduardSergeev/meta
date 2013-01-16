@@ -4,6 +4,7 @@
 
 -compile(export_all).
 
+%% Uncomment this to see splices expansion
 %% -meta_opts([dump_splices]).
 
 get_quote() ->
@@ -19,10 +20,10 @@ get_nested_quote(AnotherQuote) ->
 use_nested_quote() ->
     ?s(get_nested_quote(?q(2 + 3))) + 37.
 
-%% %% This produces "Warning: this expression will fail with a 'badarith' exception"
+%% This produces "Warning: this expression will fail with a 'badarith' exception"
 %% create_warning() ->
 %%    ?s(get_nested_quote(?q(undefined))) + 37.
-
+`
 
 inc(Arg) ->
     Arg + 1.
