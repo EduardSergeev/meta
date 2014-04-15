@@ -349,7 +349,6 @@ parse_transform(Forms, _Options) ->
     {_, Info1} = safe_mapfoldl(fun process_fun/2, Info, Funs),
     Forms2 = lists:map(insert(Info1), Forms1),
     dump_code(Forms2, Info1),
-    dump_splices(Forms2, Info1),
     Forms2.
 
 -spec process_fun(Fun, Info) -> {Forms, Info} when
@@ -871,7 +870,9 @@ eval_splice(Ln, Splice, #info{vars = Vs} = Info) ->
             meta_error(Ln, splice_badarg, Arg);
         error:undef ->
             [{Mod, Fn, Args, _}|_] = erlang:get_stacktrace(),
-            meta_error(Ln, {splice_unknown_external_function, {Mod, Fn, length(Args)}});
+            Arity = if is_list(Args) -> length(Args);
+                       is_integer(Args) -> Args end,
+            meta_error(Ln, {splice_unknown_external_function, {Mod, Fn, Arity}});
         error:Err ->
             meta_error(Ln, {invalid_splice, Err})
     end.
@@ -1050,33 +1051,30 @@ external_error(Line, Module, Error) ->
     throw({Line, Module, Error}).
 
 %%
-%% Dumping function
+%% Code dumping function
 %%
-dump_code(Forms, #info{options = Opts}) ->
-    case lists:member(dump_code, Opts) of
-        true ->
-            io:format(
-              "~s~n",
-              [erl_prettypr:format(erl_syntax:form_list(Forms))]);
-        false ->
-            ok
-    end.
-
-dump_splices(Forms, #info{options = Opts} = Info) ->
-    case lists:member(dump_splices, Opts) of
-        true ->
-            SFuns = Info#info.splice_funs,
-            Funs =
+dump_code(Forms, #info{options = Opts} = Info) ->
+    ToBeDumped =
+        case lists:member(dump_code, Opts) of
+            true ->
+                Forms;
+            false ->
+                DumpAllSplices = lists:member(dump_splices, Opts),
+                Props = [ Prop || {_,_} = Prop <- Opts ],
+                DumpFuns =
+                    gb_sets:from_list(
+                      lists:flatten(
+                        proplists:get_all_values(dump_funs, Props))),
+                SFuns = Info#info.splice_funs,
                 [ F ||
                     #function{name = N, arity = A} = F <- Forms, 
-                    gb_sets:is_member({N,A}, SFuns) ],
-            io:format(
-              "~s~n",
-              [erl_prettypr:format(erl_syntax:form_list(Funs))]);
-        false ->
-            ok
-    end.
-
+                    gb_sets:is_member({N,A}, DumpFuns)
+                    orelse (DumpAllSplices
+                            andalso gb_sets:is_member({N,A}, SFuns)) ]
+        end,
+    lists:foreach(fun(Form) ->
+                          io:format("~s~n", [erl_prettypr:format(Form)])
+                  end, ToBeDumped).
 
 %%
 %% Formats error messages for compiler 
