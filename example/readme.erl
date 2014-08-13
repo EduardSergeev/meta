@@ -23,7 +23,6 @@ use_nested_quote() ->
 %% This produces "Warning: this expression will fail with a 'badarith' exception"
 %% create_warning() ->
 %%    ?s(get_nested_quote(?q(undefined))) + 37.
-`
 
 inc(Arg) ->
     Arg + 1.
