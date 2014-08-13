@@ -15,3 +15,7 @@ meta_add(A, B) ->
     
 trans(A, B) ->
     meta_add(A, B).
+
+
+callback_call(Fun, Args, Info) when is_atom(Fun) ->
+    meta:local_apply(Fun, Args, Info).

@@ -15,6 +15,7 @@
          reify_attributes/2,
          reify/2,
          error/2, error/3,
+         local_apply/3,
 
          parse_transform/2,
          format_error/1,
@@ -22,7 +23,8 @@
          hygienize_var/3,
 
          %% meta-function stubs
-         quote/1, splice/1, ref/1, verbatim/1, extract/1]).
+         quote/1, splice/1, ref/1, verbatim/1,
+         extract/1, reify/0]).
 
 -include("../include/meta_syntax.hrl").
 
@@ -57,6 +59,8 @@
          vars = gb_sets:new()}).
 
 -opaque info() :: #info{}.
+%% Structure which contains all `meta' insformation
+%% for the currently meta-expanding module
 
 -export_type([quote/1, info/0]).
 
@@ -122,7 +126,7 @@
 %%--------------------------------------------------------------------
 -spec quote(Expr) -> quote(Expr) when Expr :: any().
 quote(_Expr) ->
-    meta_error(get_line, {meta_function, quote}).
+    meta_error(get_line, {meta_function, {quote,1}}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -141,7 +145,7 @@ quote(_Expr) ->
 %%--------------------------------------------------------------------
 -spec splice(quote(Expr)) -> Expr when Expr :: any().
 splice(_QExpr) ->
-    meta_error(get_line, {meta_function, splice}).
+    meta_error(get_line, {meta_function, {splice,1}}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -160,7 +164,7 @@ splice(_QExpr) ->
 %%--------------------------------------------------------------------
 -spec ref(Var) -> quote(Var) when Var :: any().
 ref(_Expr) ->
-    meta_error(get_line, {meta_function, ref}).
+    meta_error(get_line, {meta_function, {ref,1}}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -176,7 +180,7 @@ ref(_Expr) ->
 %%--------------------------------------------------------------------
 -spec verbatim(form()) -> quote(Expr) when Expr :: any().
 verbatim(_Expr) ->
-    meta_error(get_line, {meta_function, verbatim}).
+    meta_error(get_line, {meta_function, {verbatim,1}}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -198,8 +202,22 @@ verbatim(_Expr) ->
 %%--------------------------------------------------------------------
 -spec extract(quote(Expr)) -> form() when Expr :: any().
 extract(_Expr) ->
-    meta_error(get_line, {meta_function, extract}).
+    meta_error(get_line, {meta_function, {extract,1}}).
     
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Meta-function which produces `info()' upon meta-expansion
+%%
+%% This meta-function is converted into instance of {@type info()} type
+%% for the currently processing module
+%% which can be used as an argument for other functions in `meta'
+%% requiring {@type info()}
+%% @end
+%%--------------------------------------------------------------------
+-spec reify() -> info().
+reify() ->
+    meta_error(get_line, {meta_function, {reify,0}}).    
 
 %%%
 %%% API
@@ -261,6 +279,40 @@ error(Module, Error) ->
 error(Module, Error, Arg) ->
     throw({external_error, Module, {Error, Arg}}).
 
+%%--------------------------------------------------------------------
+%% @doc
+%% Local meta-function application callable from external module
+%%
+%% This function can be used to call a local
+%% to the currently meta-expanding module function from external module
+%% in splice.
+%% Local function calls are normally handled by `?s/1' evaluation mechanism,
+%% but should such function be called from some external module
+%% the mechanism will fail since the "local" module is yet to be fully compiled
+%% at this stage. However this helper function can be used for such call
+%% if the {@type info()} structure from the "local" module being expanded
+%% is availabe in the "external" module.
+%%
+%% Note: This is "advanced" feature, for most cases `?s/1' evaluation
+%% should be enough.
+%%
+%% Note2: Not all types of arguments can be passed to `Args' -
+%% the list is limited to types which can be handles by {@link erl_syntax:abstract/1},
+%% which means that quotes (`?q/1') cannot be passed
+%% @end
+%%--------------------------------------------------------------------
+-spec local_apply(FunName :: atom(), Args :: [any()], Info :: info()) ->
+                         FunResult :: any().
+local_apply(FunName, Args, Info) ->
+    QFun = erl_syntax:atom(FunName),
+    QArgs = [ erl_syntax:abstract(A) || A <- Args ],
+    App = erl_syntax:application(none, QFun, QArgs),
+    Expr = erl_syntax:revert(App),
+    Bs = erl_eval:new_bindings(),
+    Local = {eval, local_handler(0, Info)},
+    {value, Val, _} = erl_eval:expr(Expr, Bs, Local),
+    Val.
+
 
 -spec hygienize_var(VarName, Vars, VarMaps) ->
                            {VarName, Vars, VarMaps} when
@@ -297,7 +349,6 @@ parse_transform(Forms, _Options) ->
     {_, Info1} = safe_mapfoldl(fun process_fun/2, Info, Funs),
     Forms2 = lists:map(insert(Info1), Forms1),
     dump_code(Forms2, Info1),
-    dump_splices(Forms2, Info1),
     Forms2.
 
 -spec process_fun(Fun, Info) -> {Forms, Info} when
@@ -813,15 +864,17 @@ eval_splice(Ln, Splice, #info{vars = Vs} = Info) ->
             meta_error(Ln, splice_external_var, Var);
         error:{badarity, _} ->
             meta_error(Ln, splice_badarity);
-        error:{badfun, _} ->
-            meta_error(Ln, splice_badfun);
+        error:{badfun, BadFun} ->
+            meta_error(Ln, {splice_badfun, BadFun});
         error:{badarg, Arg} ->
             meta_error(Ln, splice_badarg, Arg);
         error:undef ->
             [{Mod, Fn, Args, _}|_] = erlang:get_stacktrace(),
-            meta_error(Ln, {splice_unknown_external_function, {Mod, Fn, length(Args)}});
-        error:_ ->
-            meta_error(Ln, invalid_splice)
+            Arity = if is_list(Args) -> length(Args);
+                       is_integer(Args) -> Args end,
+            meta_error(Ln, {splice_unknown_external_function, {Mod, Fn, Arity}});
+        error:Err ->
+            meta_error(Ln, {invalid_splice, Err})
     end.
 
 local_handler(Ln, Info) ->
@@ -998,33 +1051,30 @@ external_error(Line, Module, Error) ->
     throw({Line, Module, Error}).
 
 %%
-%% Dumping function
+%% Code dumping function
 %%
-dump_code(Forms, #info{options = Opts}) ->
-    case lists:member(dump_code, Opts) of
-        true ->
-            io:format(
-              "~s~n",
-              [erl_prettypr:format(erl_syntax:form_list(Forms))]);
-        false ->
-            ok
-    end.
-
-dump_splices(Forms, #info{options = Opts} = Info) ->
-    case lists:member(dump_splices, Opts) of
-        true ->
-            SFuns = Info#info.splice_funs,
-            Funs =
+dump_code(Forms, #info{options = Opts} = Info) ->
+    ToBeDumped =
+        case lists:member(dump_code, Opts) of
+            true ->
+                Forms;
+            false ->
+                DumpAllSplices = lists:member(dump_splices, Opts),
+                Props = [ Prop || {_,_} = Prop <- Opts ],
+                DumpFuns =
+                    gb_sets:from_list(
+                      lists:flatten(
+                        proplists:get_all_values(dump_funs, Props))),
+                SFuns = Info#info.splice_funs,
                 [ F ||
                     #function{name = N, arity = A} = F <- Forms, 
-                    gb_sets:is_member({N,A}, SFuns) ],
-            io:format(
-              "~s~n",
-              [erl_prettypr:format(erl_syntax:form_list(Funs))]);
-        false ->
-            ok
-    end.
-
+                    gb_sets:is_member({N,A}, DumpFuns)
+                    orelse (DumpAllSplices
+                            andalso gb_sets:is_member({N,A}, SFuns)) ]
+        end,
+    lists:foreach(fun(Form) ->
+                          io:format("~s~n", [erl_prettypr:format(Form)])
+                  end, ToBeDumped).
 
 %%
 %% Formats error messages for compiler 
@@ -1054,14 +1104,16 @@ format_error({reify_unknown_function_spec, {Name, Arity}}) ->
            [Name, Arity]);
 format_error({reify_unknown_attribute, Name}) ->
     format("attempt to reify unknown attribute '~s'", [Name]);
-format_error(invalid_splice) ->
-    "invalid expression in meta:splice/1";
+format_error({invalid_splice, Err}) ->
+    format(
+      "Invalid expression in 'meta:splice/1' resulted in error: ~p",
+      [Err]);
 format_error({splice_external_var, Var}) ->
     format("Variable '~s' is outside of scope of meta:splice/1", [Var]);
 format_error(splice_badarity) ->
     "'badarity' call in 'meta:splice'";
-format_error(splice_badfun) ->
-    "'badfun' call in 'meta:splice'";
+format_error({splice_badfun, BadFun}) ->
+    format("'badfun' call in 'meta:splice': ~p", [BadFun]);
 format_error({splice_badarg, Arg}) ->
     format("'badarg' in 'meta:splice': ~p", [Arg]);
 format_error(splice_unknown_external_function) ->
@@ -1084,10 +1136,10 @@ format_error(verbatim_in_quote) ->
     "meta:verbatin/1 is not allowed within meta:quote/1";
 format_error(quote_in_verbatim) ->
     "meta:quote/1 is not allowed within meta:verbatim/1";
-format_error({meta_function, Fun}) ->
+format_error({meta_function, {Fun,Arity}}) ->
     format(
-      "Function '~s/0' is a meta-function which should not be called directly",
-      [Fun]).
+      "Function '~s/~b' is a meta-function which should not be called directly",
+      [Fun, Arity]).
 
 type_to_list({Name, Args}) ->
     Args1 = string:join([type_to_list(T) || T <- Args], ","),
